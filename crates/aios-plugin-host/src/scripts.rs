@@ -376,13 +376,10 @@ fn map_outcome_to_response(script: &ScriptCommand, outcome: &ScriptRunOutcome) -
     match script.mode {
         ScriptMode::Silent => {
             if outcome.succeeded() {
-                let title = outcome
-                    .last_non_empty_line()
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| format!("Completed {}", script.title));
-                PluginResponse::CloseWindow {
-                    hud: Some(HudMessage { title }),
-                }
+                let hud = outcome.last_non_empty_line().map(|title| HudMessage {
+                    title: title.to_owned(),
+                });
+                PluginResponse::CloseWindow { hud }
             } else {
                 PluginResponse::ShowToast {
                     toast: ToastMessage {

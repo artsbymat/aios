@@ -331,6 +331,15 @@ impl PluginHost {
                     self.menu_bar_states
                         .insert(format!("{plugin_id}:{command_id}"), state.clone());
                 }
+                // Opening a plugin command from Root Search or Settings must always push a new
+                // navigation frame rather than overwriting the caller's frame in place.
+                let response = match response {
+                    PluginResponse::Render { view } => PluginResponse::Push {
+                        frame_id: Some(format!("plugin:{plugin_id}:{command_id}")),
+                        view,
+                    },
+                    other => other,
+                };
                 let session = match &response {
                     PluginResponse::Render { .. } | PluginResponse::Push { .. } => {
                         Some((plugin_id.to_owned(), command_id.to_owned()))

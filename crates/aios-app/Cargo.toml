@@ -17,6 +17,7 @@ aios-plugin-host = { workspace = true }
 aios-ui = { workspace = true }
 aios-wayland = { workspace = true }
 anyhow = { workspace = true }
+async-channel = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 

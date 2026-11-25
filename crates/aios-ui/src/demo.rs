@@ -1019,11 +1019,53 @@ pub fn dispatch_demo_action(state: &mut LauncherState, action_id: &str) -> Shell
     }
 }
 
-/// Navigates to a deep-link URI such as `aios://demo/grid`, `aios://demo/form`, `aios://demo/detail`.
+/// Navigates to a deep-link URI such as `aios://search?q=screenshot`, `aios://demo/grid`,
+/// `aios://demo/form`, or `aios://demo/detail`.
 pub fn open_deep_link(state: &mut LauncherState, uri: &str) {
     let normalized = uri.trim().trim_start_matches("aios://");
+    let (route, query_str) = match normalized.split_once('?') {
+        Some((r, q)) => (r.trim_end_matches('/'), Some(q)),
+        None => (normalized.trim_end_matches('/'), None),
+    };
     state.pop_to_root();
-    match normalized {
+    match route {
+        "search" => {
+            if let Some(qs) = query_str {
+                let mut query_text: Option<String> = None;
+                let mut filter_id: Option<String> = None;
+                for pair in qs.split('&') {
+                    if pair.is_empty() {
+                        continue;
+                    }
+                    let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+                    let key = percent_decode(k);
+                    let val = percent_decode(v);
+                    match key.as_str() {
+                        "q" | "query" => query_text = Some(val),
+                        "filter" => filter_id = Some(val),
+                        _ => {}
+                    }
+                }
+                let root = state.current_mut();
+                if let Some(q) = query_text {
+                    root.search_query = q;
+                }
+                if let ViewNode::List(list) = &mut root.view
+                    && let Some(dropdown) = &mut list.filter_dropdown
+                {
+                    if let Some(fid) = filter_id
+                        && dropdown.options.iter().any(|o| o.id == fid)
+                    {
+                        dropdown.selected_id = fid;
+                    } else if dropdown.options.iter().any(|o| o.id == "all") {
+                        dropdown.selected_id = "all".to_string();
+                    }
+                }
+                root.selected_index = 0;
+                root.header_focus = crate::state::HeaderFocus::Search;
+                root.clamp_selection();
+            }
+        }
         "workbench" | "demo" | "demo/workbench" => state.push(build_root_showcase_frame()),
         "demo/list-detail" | "list-detail" => state.push(build_split_list_detail_frame()),
         "demo/grid" | "grid" => state.push(build_grid_frame()),
@@ -1036,9 +1078,49 @@ pub fn open_deep_link(state: &mut LauncherState, uri: &str) {
         _ => {
             state.show_toast(
                 ToastStyle::Failure,
-                format!("No plugin handler installed for {uri}"),
-                Some("External plugin runtime lands in Phase 4.".to_string()),
+                format!("No handler installed for {uri}"),
+                Some(
+                    "Supported URIs: aios://search?q=..., aios://settings, aios://demo/grid"
+                        .to_string(),
+                ),
             );
         }
+    }
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                if let (Some(hi), Some(lo)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+                    out.push((hi << 4) | lo);
+                    i += 3;
+                } else {
+                    out.push(b'%');
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
 }

@@ -4,15 +4,16 @@
 
 use std::ops::Range;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use aios_core::view::{
     Accessory, ConfirmAlert, EmptyView, ErrorView, MetadataEntry, SemanticTone, ToastMessage,
     ToastStyle,
 };
 use gpui::{
-    AnyElement, Background, BoxShadow, Div, FontWeight, HighlightStyle, Hsla, IntoElement,
-    ObjectFit, ParentElement, PathBuilder, Rgba, Styled, StyledText, canvas, div, img, point,
-    prelude::*, px,
+    Animation, AnimationExt, AnyElement, Background, BoxShadow, Div, FontWeight, HighlightStyle,
+    Hsla, IntoElement, ObjectFit, ParentElement, PathBuilder, Rgba, Styled, StyledText, canvas,
+    div, img, point, prelude::*, px, relative,
 };
 
 use crate::theme::AiosTheme;
@@ -821,6 +822,71 @@ pub fn render_empty_state(empty: &EmptyView, theme: &AiosTheme) -> Div {
     box_el
 }
 
+/// Animated indeterminate Signal Copper loading bar (static when `theme.reduced_motion` is true).
+pub fn loading_progress_bar(
+    id: &'static str,
+    width_px: Option<f32>,
+    height_px: f32,
+    rounded: bool,
+    theme: &AiosTheme,
+) -> AnyElement {
+    let c = &theme.colors;
+    let accent = c.accent_solid;
+    let radius = theme.metrics.radius_xs;
+
+    let mut track = div()
+        .relative()
+        .h(px(height_px))
+        .overflow_hidden()
+        .bg(if rounded {
+            c.bg_subtle
+        } else {
+            c.border_subtle
+        });
+
+    if let Some(w) = width_px {
+        track = track.w(px(w));
+    } else {
+        track = track.w_full();
+    }
+    if rounded {
+        track = track
+            .rounded(radius)
+            .border_1()
+            .border_color(c.border_subtle);
+    }
+
+    if theme.reduced_motion {
+        let mut bar = div().w(relative(0.45)).h_full().bg(accent);
+        if rounded {
+            bar = bar.rounded(radius);
+        }
+        return track.child(bar).into_any_element();
+    }
+
+    let mut runner = div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .w(relative(0.36))
+        .bg(accent);
+    if rounded {
+        runner = runner.rounded(radius);
+    }
+
+    let animated_runner = runner.with_animation(
+        id,
+        Animation::new(Duration::from_millis(1100)).repeat_synced(),
+        move |el, delta| {
+            // Smooth indeterminate sweep from off-left (-36%) across to off-right (100%).
+            let left_frac = -0.36 + delta * 1.36;
+            el.left(relative(left_frac))
+        },
+    );
+
+    track.child(animated_runner).into_any_element()
+}
+
 /// Mandatory Loading State view with descriptive status copy (R-27).
 pub fn render_loading_state(message: &str, theme: &AiosTheme) -> Div {
     let c = &theme.colors;
@@ -832,22 +898,13 @@ pub fn render_loading_state(message: &str, theme: &AiosTheme) -> Div {
         .justify_center()
         .gap(px(10.0))
         .p(px(24.0))
-        .child(
-            div()
-                .w(px(180.0))
-                .h(px(4.0))
-                .rounded(theme.metrics.radius_xs)
-                .bg(c.bg_subtle)
-                .border_1()
-                .border_color(c.border_subtle)
-                .child(
-                    div()
-                        .w(px(96.0))
-                        .h_full()
-                        .rounded(theme.metrics.radius_xs)
-                        .bg(c.accent_solid),
-                ),
-        )
+        .child(loading_progress_bar(
+            "aios-loading-state-bar",
+            Some(180.0),
+            5.0,
+            true,
+            theme,
+        ))
         .child(
             div()
                 .text_color(c.text_primary)

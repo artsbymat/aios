@@ -171,6 +171,7 @@ dependencies = [
  "aios-ui",
  "aios-wayland",
  "anyhow",
+ "async-channel",
  "clap",
  "tracing",
 ]
@@ -182,6 +183,7 @@ dependencies = [
  "aios-core",
  "aios-fuzzy",
  "aios-plugin-sdk",
+ "rayon",
  "serde",
  "tempfile",
  "tracing",
@@ -258,6 +260,7 @@ dependencies = [
  "async-channel",
  "gpui-ce",
  "gpui_ce_platform",
+ "tempfile",
  "tracing",
 ]
 

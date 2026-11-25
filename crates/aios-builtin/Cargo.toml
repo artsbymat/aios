@@ -8,6 +8,7 @@ license.workspace = true
 aios-core = { workspace = true }
 aios-fuzzy = { workspace = true }
 aios-plugin-sdk = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 

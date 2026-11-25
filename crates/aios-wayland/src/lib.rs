@@ -6,7 +6,7 @@ pub mod portal;
 use aios_core::Result;
 use serde::{Deserialize, Serialize};
 
-pub use ipc::{IpcClient, IpcEnvelope, IpcServer};
+pub use ipc::{DmenuIpcReader, DmenuIpcSession, DmenuIpcWriter, IpcClient, IpcEnvelope, IpcServer};
 pub use portal::{PortalThemeWatcher, decode_portal_color_scheme, read_system_color_scheme};
 
 /// Supported Wayland compositors with first-class IPC adapters.

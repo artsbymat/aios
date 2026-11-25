@@ -1,6 +1,6 @@
 //! End-to-end integration tests for Phase 4 Hybrid Plugin Runtime:
 //! - Real WebAssembly Component Model (`wasmtime` + `wit/aios-plugin.wit`) plugins:
-//!   1. `com.aios.quick-notes` (`List + Split Detail` + `LocalStorage` + `Toast` + capability-gated clipboard)
+//!   1. `com.test.list-detail` (`List + Split Detail` + `LocalStorage` + `Toast` + capability-gated clipboard)
 //!   2. `com.aios.palette-grid` (`Grid` + `Form` multi-command plugin)
 //!   3. Infinite-loop WASM plugin terminated cleanly by fuel/epoch budget (`ErrorView` isolation)
 //!   4. Trapping (`unreachable`) WASM plugin isolated cleanly into `ErrorView`
@@ -40,7 +40,7 @@ fn build_wat_component(
     let event_esc = wat_escape_bytes(event_json.as_bytes());
     let event_len = event_json.len();
 
-    let toast_title = b"Quick Notes Loaded";
+    let toast_title = b"List Detail Loaded";
     let toast_esc = wat_escape_bytes(toast_title);
     let toast_len = toast_title.len();
 
@@ -319,29 +319,56 @@ fn test_host(tmp: &TempDir) -> (AiosPaths, Arc<Mutex<Database>>, PluginHost) {
     (paths, db, host)
 }
 
+const TEST_LIST_DETAIL_MANIFEST: &str = r#"
+[plugin]
+id = "com.test.list-detail"
+name = "List Detail Fixture"
+version = "0.1.0"
+description = "Test fixture exercising List+Detail, LocalStorage, and clipboard capability gating."
+author = "AIOS"
+min_aios_version = "0.1.0"
+entry = "plugin.wasm"
+
+[capabilities]
+clipboard_write = true
+
+[[preferences]]
+name = "default_folder"
+title = "Default Folder"
+kind = "textfield"
+default = "inbox"
+
+[[commands]]
+id = "browse"
+title = "Browse Items"
+subtitle = "List Detail Fixture"
+mode = "view"
+default_view = "list"
+"#;
+
 #[test]
-fn quick_notes_list_detail_wasm_plugin_and_capability_gate_work_end_to_end() {
+fn list_detail_wasm_plugin_and_capability_gate_work_end_to_end() {
     let tmp = TempDir::new().expect("temp dir");
     let (_paths, db, mut host) = test_host(&tmp);
 
-    // Stage reference plugin 1 bundle using the real manifest from examples/plugins/quick-notes-wasm.
-    let bundle_dir = tmp.path().join("stage-quick-notes");
+    // Stage synthetic List+Detail plugin fixture in temp dir.
+    let bundle_dir = tmp.path().join("stage-list-detail");
     fs::create_dir_all(&bundle_dir).expect("mkdir stage");
-    fs::copy(
-        repo_root().join("examples/plugins/quick-notes-wasm/aios-plugin.toml"),
+    fs::write(
         bundle_dir.join("aios-plugin.toml"),
+        TEST_LIST_DETAIL_MANIFEST,
     )
-    .expect("copy quick-notes manifest");
+    .expect("write list-detail manifest");
 
-    let list_view = ListViewBuilder::new("Quick Notes (WASM)")
+    let list_view = ListViewBuilder::new("List Detail Fixture (WASM)")
         .showing_detail(true)
         .section(
-            Some("Saved Notes"),
-            Some("1 note"),
+            Some("Saved Items"),
+            Some("1 item"),
             vec![
-                ListItemBuilder::new("note-1", "Wayland Layer-Shell Checklist")
+                ListItemBuilder::new("item-1", "Wayland Layer-Shell Checklist")
                     .subtitle("inbox")
-                    .icon("NT")
+                    .icon("LD")
                     .detail(
                         "# Wayland Layer-Shell Checklist\n\n- Hyprland blur rule",
                         vec![MetadataEntry::Label {
@@ -351,7 +378,7 @@ fn quick_notes_list_detail_wasm_plugin_and_capability_gate_work_end_to_end() {
                     )
                     .actions(
                         ActionPanelBuilder::new()
-                            .action(ActionItem::new("note.copy", "Copy Note").shortcut("Enter"))
+                            .action(ActionItem::new("item.copy", "Copy Item").shortcut("Enter"))
                             .build(),
                     )
                     .build(),
@@ -363,7 +390,7 @@ fn quick_notes_list_detail_wasm_plugin_and_capability_gate_work_end_to_end() {
         .expect("serialize list view");
     let event_json = PluginResponse::ShowHud {
         hud: HudMessage {
-            title: "Copied Quick Note".to_string(),
+            title: "Copied Item".to_string(),
         },
     }
     .to_json()
@@ -375,43 +402,43 @@ fn quick_notes_list_detail_wasm_plugin_and_capability_gate_work_end_to_end() {
     // Install into XDG plugins directory and verify Root Search projection.
     let installed = host
         .install_local_plugin(&bundle_dir)
-        .expect("install quick-notes");
-    assert_eq!(installed.manifest.id, "com.aios.quick-notes");
+        .expect("install list-detail fixture");
+    assert_eq!(installed.manifest.id, "com.test.list-detail");
     assert!(
         host.root_search_entries()
             .iter()
-            .any(|e| e.id == "plugin:com.aios.quick-notes:browse")
+            .any(|e| e.id == "plugin:com.test.list-detail:browse")
     );
 
-    // 1. Run `browse` -> renders List+Detail, persists LocalStorage, and emits Toast side-effect!
-    let res = host.run_wasm_command("com.aios.quick-notes", "browse", "[]", "dark");
+    // 1. Run `browse` -> pushes List+Detail frame, persists LocalStorage, and emits Toast side-effect!
+    let res = host.run_wasm_command("com.test.list-detail", "browse", "[]", "dark");
     assert!(
         matches!(
             res.response,
-            PluginResponse::Render { ref view } if matches!(view.as_ref(), ViewNode::List(l) if l.is_showing_detail)
+            PluginResponse::Push { ref view, .. } if matches!(view.as_ref(), ViewNode::List(l) if l.is_showing_detail)
         ),
         "unexpected browse response: {:#?}",
         res.response
     );
     assert!(res.side_effects.iter().any(|s| matches!(
         s,
-        HostSideEffect::ShowToast(t) if t.title == "Quick Notes Loaded"
+        HostSideEffect::ShowToast(t) if t.title == "List Detail Loaded"
     )));
     let stored = db
         .lock()
         .expect("lock db")
-        .plugin_storage_get("com.aios.quick-notes", "last_opened")
+        .plugin_storage_get("com.test.list-detail", "last_opened")
         .expect("read storage");
     assert_eq!(stored, Some(b"v1-note".to_vec()));
 
     // 2. Trigger clipboard action BEFORE approving `clipboard_write` -> denied cleanly into ErrorView!
     let event = PluginEvent::ActionTriggered {
         command_id: "browse".to_string(),
-        action_id: "note.copy".to_string(),
-        item_id: Some("note-1".to_string()),
+        action_id: "item.copy".to_string(),
+        item_id: Some("item-1".to_string()),
         inline_args: Vec::new(),
     };
-    let denied = host.send_wasm_event("com.aios.quick-notes", "browse", &event, "dark");
+    let denied = host.send_wasm_event("com.test.list-detail", "browse", &event, "dark");
     assert!(matches!(
         denied.response,
         PluginResponse::Render { ref view } if matches!(view.as_ref(), ViewNode::Error(e) if e.detail.as_deref().unwrap_or("").contains("not been approved"))
@@ -420,7 +447,7 @@ fn quick_notes_list_detail_wasm_plugin_and_capability_gate_work_end_to_end() {
     // 3. Approve `clipboard_write` via Settings & Extension Manager action -> now succeeds!
     let grant_res = host
         .dispatch_host_action(
-            "settings.cap-set:com.aios.quick-notes:clipboard_write:grant",
+            "settings.cap-set:com.test.list-detail:clipboard_write:grant",
             &[],
             None,
             "dark",
@@ -428,7 +455,7 @@ fn quick_notes_list_detail_wasm_plugin_and_capability_gate_work_end_to_end() {
         .expect("cap grant action");
     assert!(matches!(grant_res.response, PluginResponse::Render { .. }));
 
-    let allowed = host.send_wasm_event("com.aios.quick-notes", "browse", &event, "dark");
+    let allowed = host.send_wasm_event("com.test.list-detail", "browse", &event, "dark");
     assert!(matches!(allowed.response, PluginResponse::ShowHud { .. }));
     assert!(allowed.side_effects.iter().any(|s| matches!(
         s,
@@ -504,7 +531,7 @@ fn palette_grid_and_form_wasm_plugin_runs_end_to_end() {
     let res = host.run_wasm_command("com.aios.palette-grid", "swatches", "[]", "light");
     assert!(matches!(
         res.response,
-        PluginResponse::Render { ref view } if matches!(view.as_ref(), ViewNode::Grid(g) if g.columns == 4)
+        PluginResponse::Push { ref view, .. } if matches!(view.as_ref(), ViewNode::Grid(g) if g.columns == 4)
     ));
 
     let push_form = host.send_wasm_event(
@@ -666,11 +693,8 @@ fn settings_extension_manager_and_dev_watcher_work_end_to_end() {
     // Prepare a local dev plugin directory.
     let dev_dir = tmp.path().join("my-dev-plugin");
     fs::create_dir_all(&dev_dir).expect("mkdir dev");
-    fs::copy(
-        repo_root().join("examples/plugins/quick-notes-wasm/aios-plugin.toml"),
-        dev_dir.join("aios-plugin.toml"),
-    )
-    .expect("copy manifest");
+    fs::write(dev_dir.join("aios-plugin.toml"), TEST_LIST_DETAIL_MANIFEST)
+        .expect("write dev manifest");
     let ok_json = PluginResponse::Noop.to_json().expect("noop json");
     fs::write(
         dev_dir.join("plugin.wasm"),
@@ -714,7 +738,7 @@ fn settings_extension_manager_and_dev_watcher_work_end_to_end() {
     pref_vals.insert("default_folder".to_string(), "projects".to_string());
     let pref_res = host
         .dispatch_host_action(
-            "settings.plugin-prefs-save:com.aios.quick-notes",
+            "settings.plugin-prefs-save:com.test.list-detail",
             &[],
             Some(&pref_vals),
             "dark",
@@ -724,7 +748,7 @@ fn settings_extension_manager_and_dev_watcher_work_end_to_end() {
     assert_eq!(
         db.lock()
             .expect("lock db")
-            .get_plugin_preference("com.aios.quick-notes", "default_folder")
+            .get_plugin_preference("com.test.list-detail", "default_folder")
             .expect("read pref"),
         Some("projects".to_string())
     );
@@ -736,7 +760,7 @@ fn settings_extension_manager_and_dev_watcher_work_end_to_end() {
     // Uninstall prompts ConfirmAlert, then removes bundle & purges SQLite state.
     let prompt = host
         .dispatch_host_action(
-            "settings.plugin-uninstall-prompt:com.aios.quick-notes",
+            "settings.plugin-uninstall-prompt:com.test.list-detail",
             &[],
             None,
             "dark",
@@ -746,7 +770,7 @@ fn settings_extension_manager_and_dev_watcher_work_end_to_end() {
 
     let confirmed = host
         .dispatch_host_action(
-            "settings.plugin-uninstall-confirm:com.aios.quick-notes",
+            "settings.plugin-uninstall-confirm:com.test.list-detail",
             &[],
             None,
             "dark",
@@ -757,8 +781,123 @@ fn settings_extension_manager_and_dev_watcher_work_end_to_end() {
     assert_eq!(
         db.lock()
             .expect("lock db")
-            .get_plugin_preference("com.aios.quick-notes", "default_folder")
+            .get_plugin_preference("com.test.list-detail", "default_folder")
             .expect("pref purged"),
         None
+    );
+}
+
+#[test]
+fn shipped_palette_grid_wasm_saves_custom_swatches_and_reloads() {
+    let tmp = TempDir::new().expect("temp dir");
+    let (_paths, db, mut host) = test_host(&tmp);
+
+    let example_dir = repo_root().join("examples/plugins/palette-grid-wasm");
+    assert!(
+        example_dir.join("plugin.wasm").is_file(),
+        "run `cargo run -p aios-plugin-host --example build_example_plugins` first"
+    );
+
+    let installed = host
+        .install_local_plugin(&example_dir)
+        .expect("install shipped palette-grid-wasm");
+    assert!(
+        installed
+            .icon_path
+            .as_ref()
+            .is_some_and(|p| p.ends_with("icon.svg") && p.is_file()),
+        "expected installed icon.svg, got {:?}",
+        installed.icon_path
+    );
+
+    // 1. Opening `new-swatch` must Push a FormView (never overwrite Root Search).
+    let open_form = host.run_wasm_command("com.aios.palette-grid", "new-swatch", "[]", "dark");
+    assert!(
+        matches!(
+            open_form.response,
+            PluginResponse::Push { ref frame_id, ref view }
+                if frame_id.as_deref() == Some("plugin:com.aios.palette-grid:new-swatch")
+                && matches!(view.as_ref(), ViewNode::Form(_))
+        ),
+        "expected Push(FormView), got {:#?}",
+        open_form.response
+    );
+
+    // 2. Submitting the Form persists the new swatch in SQLite LocalStorage and renders updated Grid.
+    let mut values = BTreeMap::new();
+    values.insert("name".to_string(), "Ocean Mineral".to_string());
+    values.insert("hex".to_string(), "#1E6F9F".to_string());
+    values.insert("theme".to_string(), "dark".to_string());
+
+    let submit_res = host.send_wasm_event(
+        "com.aios.palette-grid",
+        "new-swatch",
+        &PluginEvent::FormSubmitted {
+            command_id: "new-swatch".to_string(),
+            action_id: "swatch.save".to_string(),
+            values,
+        },
+        "dark",
+    );
+
+    assert!(submit_res.side_effects.iter().any(|s| matches!(
+        s,
+        HostSideEffect::ShowToast(t) if t.title == "Saved Custom Swatch"
+    )));
+    assert!(submit_res.side_effects.iter().any(|s| matches!(
+        s,
+        HostSideEffect::ShowHud(h) if h.title == "Saved Custom Swatch"
+    )));
+
+    match submit_res.response {
+        PluginResponse::Render { view } => match *view {
+            ViewNode::Grid(grid) => {
+                let items = &grid.sections[0].items;
+                assert_eq!(items.len(), 9, "8 default + 1 saved custom swatch");
+                let last = items.last().expect("saved swatch");
+                assert_eq!(last.title, "Ocean Mineral");
+                assert_eq!(last.subtitle.as_deref(), Some("#1E6F9F"));
+            }
+            other => panic!("expected updated GridView, got {other:?}"),
+        },
+        other => panic!("expected Render(GridView), got {other:?}"),
+    }
+
+    // 3. Verify SQLite persistence survives reopening `swatches`.
+    let raw_saved = db
+        .lock()
+        .expect("lock db")
+        .plugin_storage_get("com.aios.palette-grid", "custom_swatches_v1")
+        .expect("read saved swatches");
+    assert!(raw_saved.is_some());
+
+    let reopened = host.run_wasm_command("com.aios.palette-grid", "swatches", "[]", "dark");
+    match reopened.response {
+        PluginResponse::Push { view, .. } => match *view {
+            ViewNode::Grid(grid) => {
+                assert_eq!(grid.sections[0].items.len(), 9);
+                assert!(grid.sections[0].items.iter().any(
+                    |i| i.title == "Ocean Mineral" && i.subtitle.as_deref() == Some("#1E6F9F")
+                ));
+            }
+            other => panic!("expected GridView on reopen, got {other:?}"),
+        },
+        other => panic!("expected Push(GridView) on reopen, got {other:?}"),
+    }
+
+    // 4. Unrelated events (SearchTextChanged / DropdownChanged) must return Noop (never push Form).
+    let search_ev = host.send_wasm_event(
+        "com.aios.palette-grid",
+        "swatches",
+        &PluginEvent::SearchTextChanged {
+            command_id: "swatches".to_string(),
+            query: "a".to_string(),
+        },
+        "dark",
+    );
+    assert!(
+        matches!(search_ev.response, PluginResponse::Noop),
+        "expected Noop for SearchTextChanged, got {:#?}",
+        search_ev.response
     );
 }

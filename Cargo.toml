@@ -47,7 +47,7 @@ ureq = "2.12"
 wasmtime = { version = "29.0", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 wasmtime-wasi = "29.0"
 wat = "1.225"
-zbus = { version = "5.19", default-features = false, features = ["blocking-api"] }
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

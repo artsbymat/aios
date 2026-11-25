@@ -233,10 +233,10 @@ mod tests {
     fn parses_manifest_toml_with_capabilities_preferences_and_commands() {
         let toml_src = r#"
 [plugin]
-id = "com.aios.quick-notes"
-name = "Quick Notes"
+id = "com.example.sample-plugin"
+name = "Sample Plugin"
 version = "0.1.0"
-description = "Local markdown notes in a split List+Detail view."
+description = "Sample plugin manifest for unit tests."
 author = "AIOS"
 min_aios_version = "0.1.0"
 entry = "plugin.wasm"
@@ -244,7 +244,7 @@ entry = "plugin.wasm"
 [capabilities]
 clipboard_write = true
 http_hosts = ["https://api.example.com"]
-fs_read = ["/tmp/notes"]
+fs_read = ["/tmp/sample"]
 secrets = false
 
 [[preferences]]
@@ -255,22 +255,22 @@ default = "inbox"
 
 [[commands]]
 id = "browse"
-title = "Browse Quick Notes"
-subtitle = "Quick Notes"
+title = "Browse Sample Items"
+subtitle = "Sample Plugin"
 mode = "view"
 default_view = "list"
 "#;
 
         let parsed = PluginManifestFile::from_toml_str(toml_src).expect("valid manifest");
         let manifest = parsed.into_manifest();
-        assert_eq!(manifest.id, "com.aios.quick-notes");
+        assert_eq!(manifest.id, "com.example.sample-plugin");
         assert!(manifest.capabilities.clipboard_write);
         assert_eq!(
             manifest.capabilities.declared_keys(),
             vec![
                 "clipboard_write",
                 "http:https://api.example.com",
-                "fs_read:/tmp/notes"
+                "fs_read:/tmp/sample"
             ]
         );
         assert_eq!(manifest.preferences.len(), 1);

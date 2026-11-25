@@ -155,6 +155,34 @@ impl SortKey {
         }
     }
 
+    /// Zero-allocation comparison of a borrowed candidate against an existing `SortKey`.
+    #[inline]
+    fn cmp_candidate_best_first<T: SearchItem>(
+        item: &T,
+        item_index: usize,
+        result: &MatchResult,
+        worst: &Self,
+    ) -> Ordering {
+        worst
+            .score
+            .cmp(&result.score)
+            .then_with(|| {
+                let len = item.primary_text().chars().count();
+                len.cmp(&worst.primary_char_len)
+            })
+            .then_with(|| {
+                let first = result
+                    .primary_indices
+                    .first()
+                    .copied()
+                    .unwrap_or(usize::MAX);
+                first.cmp(&worst.first_match_index)
+            })
+            .then_with(|| item.primary_text().cmp(worst.primary_text.as_str()))
+            .then_with(|| item.id().cmp(worst.id.as_str()))
+            .then_with(|| item_index.cmp(&worst.item_index))
+    }
+
     /// Best-first ordering (smaller `Ordering::Less` means better rank).
     fn cmp_best_first(&self, other: &Self) -> Ordering {
         other
@@ -222,10 +250,12 @@ impl TopKCollector {
         if self.limit == 0 {
             return;
         }
-        // Fast path: if heap is full and score is strictly lower than worst score, skip key alloc.
+        // Fast path: if heap is full and candidate does not strictly beat the worst entry
+        // (checked zero-alloc against borrowed `&str`), skip heap `SortKey` allocation completely.
         if self.heap.len() >= self.limit
             && let Some(worst) = self.heap.peek()
-            && result.score < worst.key.score
+            && SortKey::cmp_candidate_best_first(item, item_index, &result, &worst.key)
+                != Ordering::Less
         {
             return;
         }
@@ -292,13 +322,18 @@ fn score_slice_parallel<T: SearchItem>(
             let mut local = TopKCollector::new(ctx.config.limit);
             let mut matched_count = 0usize;
 
+            let has_frecency = !ctx.frecency.is_empty();
             for (offset, item) in chunk.iter().enumerate() {
                 if offset.is_multiple_of(check_every)
                     && ctx.cancel.is_some_and(CancellationToken::is_cancelled)
                 {
                     return None;
                 }
-                let rec = ctx.frecency.get(item.id());
+                let rec = if has_frecency {
+                    ctx.frecency.get(item.id())
+                } else {
+                    None
+                };
                 if let Some(res) = score_item(
                     item,
                     ctx.query,
@@ -474,11 +509,16 @@ impl<T: SearchItem + 'static> SearchSession<T> {
         // Stage 1: Inline fast path on caller thread within strict time budget.
         let inline_start = Instant::now();
         let force_inline_all = total_items <= self.config.inline_max_items;
+        let has_frecency = !frecency.is_empty();
         const TIME_CHECK_STRIDE: usize = 64;
 
         while processed < total_items {
             let item = &corpus[processed];
-            let rec = frecency.get(item.id());
+            let rec = if has_frecency {
+                frecency.get(item.id())
+            } else {
+                None
+            };
             if let Some(res) = score_item(
                 item,
                 &query,

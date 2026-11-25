@@ -274,10 +274,12 @@ Users can drop executable scripts into `~/.config/aios/scripts/` with structured
 
 Supported Script Command modes:
 
-- `silent`: Runs in background, shows `HUD` with final stdout line.
+- `silent`: Closes the main launcher immediately and shows an `HUD` pill with the final stdout line when stdout is non-empty. If the script writes no stdout, the launcher closes silently with no HUD overlay (ideal for screenshot or GUI workflows).
 - `compact`: Runs in background, shows live `Toast` with stdout status.
 - `fullOutput`: Renders stdout/stderr inside AIOS's native `DetailView` code block with `Copy Output` and `Re-run` actions.
 - `inline`: Runs on `refreshTime` interval and displays a single summary line directly in Root Search.
+
+For ad-hoc shell pipelines that prefer a classic `dmenu`/`rofi -dmenu` prompt instead of separate Script Command files, AIOS also provides `aios dmenu` (`-p/--prompt`, `-l/--lines`, `--icon <ICON>`, `--show-icons`, `-i/--insensitive`, `-s/--sensitive`, `--case-mode <smart|insensitive|sensitive>`, `--allow-custom`, `--index`, `--theme`, `--standalone`; see `aios dmenu --help`), which routes through the running `aios daemon` over Unix socket IPC with automatic standalone fallback and supports rofi-style `Label\0icon\x1f<icon>` lines on stdin.
 
 ---
 

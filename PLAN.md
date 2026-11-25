@@ -86,7 +86,7 @@ aios/
 
 **Goal**: Deliver an instant-toggle Wayland overlay window on Hyprland and Niri with full `DESIGN.md` token fidelity.
 
-- [x] Implement `aios-wayland` single-instance daemon + Unix socket IPC (`aios toggle`, `aios show`, `aios hide`, `aios open <uri>`).
+- [x] Implement `aios-wayland` single-instance daemon + Unix socket IPC (`aios toggle`, `aios show`, `aios hide`, `aios open <uri>` including `aios://search?q=...&filter=...`, and hybrid `aios dmenu` with automatic standalone fallback).
 - [x] Implement XDG Desktop Portal `color-scheme` listener for live Dark / Light / System switching.
 - [x] Implement GPUI `WindowKind::LayerShell` overlay (`Layer::Overlay`, `KeyboardInteractivity::Exclusive`, namespace `"aios"`), centered with configurable top offset and monitor-aware focus.
 - [x] Implement `aios-ui` theme tokens directly from [DESIGN.md](DESIGN.md) and core shell chrome:
@@ -125,7 +125,7 @@ aios/
 - [x] Implement `aios-plugin-sdk` crate so plugin authors write idiomatic Rust declarative views compiled to `wasm32-wasip2`.
 - [x] Implement **Script Commands** runner (metadata header parser, `compact`/`fullOutput`/`inline`/`silent` modes, arguments, confirmation prompts).
 - [x] Implement **Settings & Extension Manager View** (built using AIOS's own multi-view UI): manage themes, aliases, hotkeys, fallback commands, plugin preferences, capability approvals, and local plugin install/uninstall.
-- [x] **Exit Criteria**: At least two reference external WASM plugins (`com.aios.quick-notes` `List+Detail`, `com.aios.palette-grid` `Grid+Form`) and two Script Commands (`system-uptime.sh`, `disk-usage.sh`) run end-to-end inside AIOS with full isolation (`46/46` workspace tests, zero clippy warnings).
+- [x] **Exit Criteria**: Reference external WASM plugin (`com.aios.palette-grid` `Grid+Form` with `icon.svg`), isolated List+Detail + capability-gate WASM fixtures, Script Commands (`system-uptime.sh`, `disk-usage.sh`), and hybrid `aios dmenu` (`stdin -> stdout` via daemon IPC + standalone fallback) run end-to-end inside AIOS with full isolation.
 
 ### Phase 5: First-Party External Plugins Suite `[PENDING]`
 

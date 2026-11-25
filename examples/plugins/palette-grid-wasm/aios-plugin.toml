@@ -5,6 +5,7 @@ version = "0.1.0"
 description = "Reference Grid & Form external WASM plugin showcasing mineral color swatches."
 author = "AIOS"
 min_aios_version = "0.1.0"
+icon = "icon.svg"
 entry = "plugin.wasm"
 
 [capabilities]

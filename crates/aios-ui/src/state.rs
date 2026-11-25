@@ -585,6 +585,21 @@ impl LauncherState {
         ShellEffect::HideWindow
     }
 
+    /// Moves sequentially to the next or previous item (`Ctrl+N` / `Ctrl+P`).
+    /// In `GridView`, advances tile-by-tile left-to-right across rows before wrapping;
+    /// in overlays, `ListView`, and `FormView`, matches [`Self::move_vertical`].
+    pub fn move_sequential(&mut self, delta: isize) {
+        if self.overlay.is_none() && matches!(self.current().view, ViewNode::Grid(_)) {
+            let count = self.current().filtered_grid_entries().len();
+            if count > 0 {
+                let cur = self.current().selected_index;
+                self.current_mut().selected_index = wrap_index(cur, delta, count);
+            }
+            return;
+        }
+        self.move_vertical(delta);
+    }
+
     /// Moves selection up or down in the active overlay, list, or grid.
     pub fn move_vertical(&mut self, delta: isize) {
         if let Some(ActiveOverlay::ActionPanel { selected_index, .. }) = &self.overlay {

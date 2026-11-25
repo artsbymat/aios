@@ -3,6 +3,7 @@
 
 pub mod components;
 pub mod demo;
+pub mod dmenu;
 pub mod fonts;
 pub mod hud;
 pub mod shell;
@@ -10,6 +11,7 @@ pub mod state;
 pub mod theme;
 pub mod views;
 
+pub use dmenu::{DmenuOutcome, DmenuState, DmenuWindow, run_dmenu_app, run_dmenu_app_streaming};
 pub use fonts::register_embedded_fonts;
 pub use shell::{LauncherWindow, run_daemon_app, run_dev_plugin_app, run_preview_app};
 pub use state::{ActiveOverlay, HeaderFocus, LauncherState, NavFrame, ShellEffect};

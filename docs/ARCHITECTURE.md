@@ -10,7 +10,8 @@ AIOS uses a **persistent lightweight daemon + instant GPUI surface** model so in
 
 ```text
 +-----------------------+          Unix Socket ($XDG_RUNTIME_DIR/aios.sock)
-| Compositor Keybind    |  ------> `aios toggle` / `aios open aios://...`
+| Compositor Keybind /  |  ------> `aios toggle` / `aios open aios://...`
+| Shell Pipeline        |          `echo ... | aios dmenu -p "Prompt"`
 | (Hyprland / Niri)     |                       |
 +-----------------------+                       v
                                    +-----------------------------------+
@@ -43,12 +44,13 @@ AIOS uses a **persistent lightweight daemon + instant GPUI surface** model so in
                                    +-----------------------------------+
 ```
 
-### Single-Instance Process Flow
+### Single-Instance Process Flow & Hybrid `dmenu` Mode
 
-1. `aios daemon` (started via `systemd --user` or compositor `exec-once` / `spawn-at-startup`) initializes the Tokio async runtime, SQLite WAL database, desktop app index, clipboard watcher, XDG theme watcher, and GPUI application loop in hidden/standby state.
-2. When the user presses their compositor keybind (for example `SUPER + Space`), the compositor runs `aios toggle` (a tiny, fast CLI path that writes a 1-frame command to `$XDG_RUNTIME_DIR/aios.sock` and exits immediately).
-3. The running GPUI host opens or reveals the `WindowKind::LayerShell` surface on the currently active monitor with `KeyboardInteractivity::Exclusive`.
-4. Pressing `Esc`, executing an action that closes the window, or losing focus hides/destroys the layer surface while keeping indexes and plugin warm caches in RAM.
+1. `aios daemon` (started via `systemd --user` or compositor `exec-once` / `spawn-at-startup`) initializes the async runtime, SQLite WAL database, desktop app index, plugin host, XDG theme watcher, and GPUI application loop in hidden/standby state.
+2. When the user presses their compositor keybind (for example `SUPER + Space`), the compositor runs `aios toggle` or `aios open "aios://search?q=...&filter=..."` (a tiny, fast CLI path that writes a 1-frame command to `$XDG_RUNTIME_DIR/aios.sock` and exits immediately).
+3. For shell scripts wanting `dmenu`/`rofi -dmenu` semantics (`echo -e "Full\nArea" | aios dmenu -p "Screenshot" -l 7`), `aios dmenu` sends a `Dmenu` request over `$XDG_RUNTIME_DIR/aios.sock` so the warm daemon opens a compact GPUI LayerShell picker immediately without blocking the IPC accept loop. If no daemon is running, `aios dmenu` falls back seamlessly to a standalone GPUI window. All structured logs go to `stderr` so `stdout` carries only the chosen item (exit code `0`) or remains empty on cancel (exit code `1`).
+4. The running GPUI host opens or reveals the `WindowKind::LayerShell` surface on the currently active monitor with `KeyboardInteractivity::Exclusive`.
+5. Pressing `Esc`, executing an action that closes the window, or cancelling `dmenu` hides/destroys the layer surface while keeping indexes and plugin warm caches in RAM.
 
 ---
 
@@ -61,6 +63,7 @@ AIOS creates three distinct GPUI surface types on Wayland (`wlr-layer-shell-unst
 | Surface        | GPUI `WindowKind`                                | Layer           | Keyboard Interactivity | Purpose                                                                |
 | -------------- | ------------------------------------------------ | --------------- | ---------------------- | ---------------------------------------------------------------------- |
 | Main Launcher  | `LayerShell` (`namespace: "aios"`)               | `Overlay`       | `Exclusive`            | Root Search, Plugin Views, Action Panel, Settings                      |
+| Dmenu Picker   | `LayerShell` (`namespace: "aios"`)               | `Overlay`       | `Exclusive`            | Compact `stdin -> stdout` fuzzy picker (`aios dmenu`, daemon/standalone) |
 | HUD Pill       | `LayerShell` (`namespace: "aios-hud"`)           | `Overlay`       | `None`                 | Non-intrusive bottom-center confirmation overlay after launcher closes |
 | Floating Notes | Standard `XDG TopLevel` (`app_id: "aios-notes"`) | Normal floating | Normal                 | Persistent scratchpad window managed by Hyprland/Niri floating rules   |
 
@@ -108,7 +111,9 @@ pub trait CompositorAdapter: Send + Sync {
 - **Supported Window Actions**: `FocusWindow`, `CloseWindow`, `ToggleFloating`, `ToggleFullscreen`, `MoveToWorkspace`, `SwitchWorkspace`, `MoveToMonitor`, `SnapHalfLeft/Right/Top/Bottom`, `CenterWindow`, `Maximize`.
 - **Recommended User Config**:
   ```ini
+  exec-once = aios daemon
   bind = SUPER, Space, exec, aios toggle
+  bind = , Print, exec, aios open "aios://search?q=screenshot&filter=commands"
   layerrule = blur, aios
   layerrule = ignorezero, aios
   windowrulev2 = float, class:^(aios-notes)$
@@ -183,7 +188,8 @@ All state lives strictly on the local machine following XDG specifications:
 - **UI Thread (GPUI main loop)**: Strictly non-blocking. Never performs disk I/O, network requests, subprocess execution, or WASM calls directly. Runs only the `aios-fuzzy` inline fast path within a strict `<= 1.5ms` budget and renders the latest `SearchSnapshot` independently at monitor refresh rate.
 - **Async Runtime (Tokio multi-thread)**: Handles Unix socket IPC, D-Bus watchers, Hyprland/Niri event streams, HTTP requests (when granted to a plugin), and file walking.
 - **Compute Pool (`rayon` / dedicated worker threads)**: Runs `aios-fuzzy` parallel chunked matching with progressive Top-K snapshot streaming, latest-wins query replacement, and atomic keystroke cancellation (modeled on `instantMENU`'s parallel search/filter/render separation), alongside Wasmtime plugin execution with fuel limits.
-- **Performance Targets (to be verified with benchmarks in Phase 1 and Phase 6)**:
-  - Toggle command to visible first frame: `< 16ms` (1 frame at 60Hz)
-  - Root Search keystroke re-rank (up to 10k items): `< 5ms`
-  - Daemon idle RSS memory: `< 40MB`
+- **Performance Targets & Verified Measurements** (see [docs/BENCHMARKS.md](BENCHMARKS.md) for full release benchmark numbers and reproduction commands):
+  - Unix socket IPC `Toggle` round-trip: `29.6 us` (target: toggle-to-first-frame `< 16ms`)
+  - `aios-fuzzy` parallel search: `5.32 ms` (10k items), `13.06 ms` (100k items), `1.27 ms` avg UI-thread keystroke latency on 100k items via async `SearchSession`
+  - Wasmtime cached WASM invocation: `0.14 ms` (`init-command`), `0.09 ms` (`handle-event`)
+  - Daemon idle RSS memory target: `< 40MB`

@@ -18,7 +18,7 @@ pub struct LogOptions {
 impl Default for LogOptions {
     fn default() -> Self {
         Self {
-            default_filter: "aios=info,warn".to_string(),
+            default_filter: "aios=info,usvg=error,tiny_skia=error,warn".to_string(),
             format: LogFormat::Compact,
         }
     }
@@ -33,6 +33,7 @@ pub fn init_logging(options: &LogOptions) {
     match options.format {
         LogFormat::Compact => {
             let _ = tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
                 .with_env_filter(env_filter)
                 .with_target(true)
                 .compact()
@@ -40,6 +41,7 @@ pub fn init_logging(options: &LogOptions) {
         }
         LogFormat::Pretty => {
             let _ = tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
                 .with_env_filter(env_filter)
                 .with_target(true)
                 .pretty()

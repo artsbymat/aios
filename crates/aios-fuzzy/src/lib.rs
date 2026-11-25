@@ -38,6 +38,18 @@ pub trait SearchItem: Send + Sync {
     }
 }
 
+impl SearchItem for String {
+    #[inline]
+    fn id(&self) -> &str {
+        self.as_str()
+    }
+
+    #[inline]
+    fn primary_text(&self) -> &str {
+        self.as_str()
+    }
+}
+
 /// Match score and character highlight indices returned by a match engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchResult {

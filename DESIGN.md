@@ -355,13 +355,14 @@ AIOS runs at **MOTION 1**:
 - **Micro-transitions (`100ms` ease-out)**: Applied strictly to `ActionPanel` popover reveal, `ConfirmAlert` scrim, and `Toast` appearance to preserve spatial orientation.
 - **Reduced Motion**: When system or user reduced-motion setting is active, all transitions drop to `0ms` and loading progress bars use a static labeled status indicator.
 - **Full Keyboard Operability**:
-  - `Up`/`Down` or `Ctrl+N`/`Ctrl+P`: Navigate list/action items.
+  - `Up`/`Down`: Navigate list/action items or jump rows in `Grid`.
+  - `Ctrl+N`/`Ctrl+P`: Navigate next/previous item sequentially (in `Grid`, advances left-to-right across each row before moving to the next row).
   - `Left`/`Right`/`Up`/`Down`: Navigate `Grid` tiles.
-  - `Enter`: Trigger Primary Action; `Ctrl+Enter`: Trigger Secondary Action.
+  - `Enter`: Trigger Primary Action (or confirm selection in `aios dmenu`); `Ctrl+Enter`: Trigger Secondary Action (or confirm raw custom text in `aios dmenu --allow-custom`).
   - `Ctrl+K`: Open/Close Action Panel.
   - `Ctrl+F`: Open/Close Filter Dropdown.
-  - `Tab` / `Shift+Tab`: Move between inline command arguments, form fields, and filter dropdown.
-  - `Esc`: Close popover/modal first -> clear search query -> pop view stack -> hide launcher window.
+  - `Tab` / `Shift+Tab`: Move between inline command arguments, form fields, and filter dropdown (or cycle items in `aios dmenu`).
+  - `Esc`: Close popover/modal first -> clear search query -> pop view stack -> hide launcher window (or cancel `aios dmenu` with exit code `1`).
 
 ---
 

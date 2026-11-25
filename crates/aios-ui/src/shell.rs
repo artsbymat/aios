@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aios_builtin::{
-    ExternalRootEntry, RootActionOutcome, RootSearchOrchestrator, open_url_detached,
+    ExternalRootEntry, IconResolver, RootActionOutcome, RootSearchOrchestrator, open_url_detached,
 };
 use aios_core::config::{AiosConfig, ResolvedTheme, ThemeMode};
 use aios_core::paths::AiosPaths;
@@ -33,11 +33,12 @@ use gpui::{
 };
 
 use crate::components::{
-    aios_brand_mark, back_arrow_icon, enter_keycap, keycap, popover_shadow,
+    aios_brand_mark, back_arrow_icon, enter_keycap, keycap, loading_progress_bar, popover_shadow,
     render_confirm_alert_card, render_empty_state, render_error_state, render_footer_toast,
     window_shadow,
 };
 use crate::demo::{build_root_showcase_frame, dispatch_demo_action, open_deep_link};
+use crate::dmenu::{DmenuOutcome, DmenuWindow, open_dmenu_window, parse_theme_override};
 use crate::hud::show_hud_pill;
 use crate::state::{ActiveOverlay, HeaderFocus, LauncherState, ShellEffect};
 use crate::theme::AiosTheme;
@@ -180,6 +181,9 @@ impl LauncherWindow {
     }
 
     fn dispatch_plugin_search_if_needed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.current().id == "root.search" {
+            return;
+        }
         let Some((plugin_id, command_id)) = self.state.current().plugin_session.clone() else {
             return;
         };
@@ -209,6 +213,9 @@ impl LauncherWindow {
     }
 
     fn dispatch_plugin_dropdown_if_needed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.current().id == "root.search" {
+            return;
+        }
         let Some((plugin_id, command_id)) = self.state.current().plugin_session.clone() else {
             return;
         };
@@ -241,39 +248,53 @@ impl LauncherWindow {
         cx: &mut Context<Self>,
     ) {
         let mut should_close = false;
+        let mut deferred_effects = Vec::new();
         for effect in result.side_effects {
             match effect {
-                HostSideEffect::ShowToast(toast) => {
-                    self.state
-                        .show_toast(toast.style, toast.title, toast.message);
-                }
-                HostSideEffect::ShowHud(hud) => {
-                    show_hud_pill(hud.title, cx);
-                }
-                HostSideEffect::CloseMainWindow => {
-                    should_close = true;
-                }
                 HostSideEffect::PopToRoot => {
                     self.state.pop_to_root();
                     self.refresh_root_search();
                 }
-                HostSideEffect::ClipboardWrite(text) => {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                }
-                HostSideEffect::OpenUrl(url) => {
-                    let _ = open_url_detached(&url);
-                }
+                other => deferred_effects.push(other),
             }
         }
 
         match result.response {
             PluginResponse::Render { view } => {
-                let frame = self.state.current_mut();
-                frame.view = *view;
-                if let Some(session) = result.active_plugin_session {
-                    frame.plugin_session = Some(session);
+                // Never overwrite Root Search with a plugin frame; push a dedicated plugin frame instead.
+                if self.state.current().id == "root.search"
+                    && let Some((pid, cid)) = result.active_plugin_session
+                {
+                    let frame = crate::state::NavFrame::new(format!("plugin:{pid}:{cid}"), *view)
+                        .with_plugin_session(pid, cid);
+                    self.state.push(frame);
+                } else {
+                    // If a nested plugin Form submits and renders an updated parent view (e.g. Grid),
+                    // collapse the nested form frame into the parent plugin frame so Esc returns straight to Root.
+                    let collapse_nested_form =
+                        matches!(self.state.current().view, ViewNode::Form(_))
+                            && !matches!(view.as_ref(), ViewNode::Form(_))
+                            && self.state.depth() >= 3
+                            && result
+                                .active_plugin_session
+                                .as_ref()
+                                .is_some_and(|(pid, _)| {
+                                    self.state.stack[self.state.depth() - 2]
+                                        .plugin_session
+                                        .as_ref()
+                                        .is_some_and(|(parent_pid, _)| parent_pid == pid)
+                                });
+                    if collapse_nested_form {
+                        self.state.pop();
+                    }
+
+                    let frame = self.state.current_mut();
+                    frame.view = *view;
+                    if let Some(session) = result.active_plugin_session {
+                        frame.plugin_session = Some(session);
+                    }
+                    frame.clamp_selection();
                 }
-                frame.clamp_selection();
                 self.request_scroll_sync();
             }
             PluginResponse::Push { frame_id, view } => {
@@ -346,6 +367,28 @@ impl LauncherWindow {
                 );
             }
             PluginResponse::Noop => {}
+        }
+
+        for effect in deferred_effects {
+            match effect {
+                HostSideEffect::ShowToast(toast) => {
+                    self.state
+                        .show_toast(toast.style, toast.title, toast.message);
+                }
+                HostSideEffect::ShowHud(hud) => {
+                    show_hud_pill(hud.title, cx);
+                }
+                HostSideEffect::CloseMainWindow => {
+                    should_close = true;
+                }
+                HostSideEffect::ClipboardWrite(text) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+                HostSideEffect::OpenUrl(url) => {
+                    let _ = open_url_detached(&url);
+                }
+                HostSideEffect::PopToRoot => {}
+            }
         }
 
         if should_close {
@@ -541,7 +584,7 @@ impl LauncherWindow {
         }
 
         let effect = dispatch_demo_action(&mut self.state, action_id);
-        if action_id == "search.clear" {
+        if action_id == "search.clear" || action_id == "nav.pop" {
             self.refresh_root_search();
         }
         self.request_scroll_sync();
@@ -622,14 +665,14 @@ impl LauncherWindow {
         }
 
         if mods.control && key.eq_ignore_ascii_case("p") {
-            self.state.move_vertical(-1);
+            self.state.move_sequential(-1);
             self.request_scroll_sync();
             cx.notify();
             return;
         }
 
         if mods.control && key.eq_ignore_ascii_case("n") {
-            self.state.move_vertical(1);
+            self.state.move_sequential(1);
             self.request_scroll_sync();
             cx.notify();
             return;
@@ -908,22 +951,30 @@ impl LauncherWindow {
         );
 
         let is_loading = frame.is_loading();
+        let body_shows_loading_view = is_loading
+            && match &frame.view {
+                ViewNode::List(_) => frame.filtered_list_entries().is_empty(),
+                ViewNode::Grid(_) => frame.filtered_grid_entries().is_empty(),
+                ViewNode::Detail(d) => d.markdown.trim().is_empty(),
+                _ => false,
+            };
+        let show_header_loading = is_loading && !body_shows_loading_view;
         div()
             .w_full()
             .flex_shrink_0()
             .flex()
             .flex_col()
             .child(header_row)
-            // 1px bottom divider, upgraded to 2px Signal Copper track when loading (zero layout shift).
-            .child(
+            // 1px bottom divider, upgraded to animated 2px Signal Copper track only when content is already visible.
+            .child(if show_header_loading {
+                loading_progress_bar("aios-launcher-header-loading", None, 2.0, false, theme)
+            } else {
                 div()
                     .w_full()
-                    .h(if is_loading { px(2.0) } else { px(1.0) })
+                    .h(px(1.0))
                     .bg(c.border_subtle)
-                    .when(is_loading, |d| {
-                        d.child(div().w_1_2().h_full().bg(c.accent_solid))
-                    }),
-            )
+                    .into_any_element()
+            })
             .into_any_element()
     }
 
@@ -1694,7 +1745,21 @@ pub fn run_daemon_app(
 
             let root_search = Rc::new(RefCell::new(orchestrator));
             let plugin_host = Rc::new(RefCell::new(plugin_host));
+            let shared_icon_resolver = Arc::new(Mutex::new(IconResolver::new()));
+            // Pre-warm the XDG icon index on a background thread at daemon startup so
+            // subsequent `aios dmenu --show-icons` calls incur 0ms icon-index overhead.
+            let warm_icons = Arc::clone(&shared_icon_resolver);
+            std::thread::Builder::new()
+                .name("aios-icon-warmup".into())
+                .spawn(move || {
+                    if let Ok(mut guard) = warm_icons.lock() {
+                        guard.warm_index();
+                    }
+                })
+                .ok();
             let active_window: Rc<RefCell<Option<WindowHandle<LauncherWindow>>>> =
+                Rc::new(RefCell::new(None));
+            let active_dmenu: Rc<RefCell<Option<WindowHandle<DmenuWindow>>>> =
                 Rc::new(RefCell::new(None));
 
             if show_immediately
@@ -1711,6 +1776,7 @@ pub fn run_daemon_app(
 
             // Watch live XDG Desktop Portal `color-scheme` changes.
             let win_for_theme = Rc::clone(&active_window);
+            let dmenu_for_theme = Rc::clone(&active_dmenu);
             cx.spawn(async move |cx| {
                 while let Ok(scheme) = portal_rx.recv().await {
                     cx.update(|cx| {
@@ -1719,31 +1785,106 @@ pub fn run_daemon_app(
                         if let Some(handle) = *win_for_theme.borrow() {
                             let _ = handle.update(cx, |_, _, cx| cx.notify());
                         }
+                        if let Some(handle) = *dmenu_for_theme.borrow() {
+                            let _ = handle.update(cx, |_, _, cx| cx.notify());
+                        }
                     });
                 }
             })
             .detach();
 
-            // Process incoming Unix socket IPC commands (`toggle`, `show`, `hide`, `open`, `status`).
+            // Process incoming Unix socket IPC commands (`toggle`, `show`, `hide`, `open`, `dmenu`, `status`).
             let cfg_for_ipc = config.clone();
             let win_for_ipc = Rc::clone(&active_window);
+            let dmenu_for_ipc = Rc::clone(&active_dmenu);
             let rs_for_ipc = Rc::clone(&root_search);
             let ph_for_ipc = Rc::clone(&plugin_host);
+            let icons_for_ipc = Arc::clone(&shared_icon_resolver);
             cx.spawn(async move |cx| {
                 let _hold = _keep_alive;
                 while let Ok(envelope) = ipc_rx.recv().await {
+                    let mut deferred_envelope = Some(envelope);
                     let mut reply = DaemonIpcResponse::Ok;
                     cx.update(|cx| {
-                        // Drop stale handle if user already closed window via Escape.
+                        // Drop stale handles if user already closed window via Escape.
                         let existing = *win_for_ipc.borrow();
                         let still_open =
                             existing.is_some_and(|h| h.update(cx, |_, _, _| ()).is_ok());
                         if !still_open {
                             *win_for_ipc.borrow_mut() = None;
                         }
+                        let existing_dmenu = *dmenu_for_ipc.borrow();
+                        let dmenu_open =
+                            existing_dmenu.is_some_and(|h| h.update(cx, |_, _, _| ()).is_ok());
+                        if !dmenu_open {
+                            *dmenu_for_ipc.borrow_mut() = None;
+                        }
 
-                        match &envelope.command {
+                        if matches!(
+                            deferred_envelope.as_ref().map(|e| &e.command),
+                            Some(DaemonIpcCommand::Dmenu(_))
+                        ) {
+                            let mut env = deferred_envelope.take().expect("dmenu envelope");
+                            let stream_rx = env.dmenu_stream_rx.take();
+                            let DaemonIpcCommand::Dmenu(request) = env.command.clone() else {
+                                unreachable!();
+                            };
+                            // Close any open launcher or prior dmenu so the new picker takes focus cleanly.
+                            if let Some(handle) = win_for_ipc.borrow_mut().take() {
+                                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                            }
+                            if let Some(handle) = dmenu_for_ipc.borrow_mut().take() {
+                                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                            }
+                            if let Some(override_mode) =
+                                parse_theme_override(request.theme.as_deref())
+                            {
+                                cx.global_mut::<AiosTheme>().set_mode(override_mode);
+                            }
+
+                            let env_cell = Rc::new(RefCell::new(Some(env)));
+                            let env_for_cb = Rc::clone(&env_cell);
+                            match open_dmenu_window(
+                                &cfg_for_ipc,
+                                request,
+                                stream_rx,
+                                Arc::clone(&icons_for_ipc),
+                                move |outcome| {
+                                    if let Some(env) = env_for_cb.borrow_mut().take() {
+                                        let resp = match outcome {
+                                            DmenuOutcome::Selected { value, index } => {
+                                                DaemonIpcResponse::DmenuSelected { value, index }
+                                            }
+                                            DmenuOutcome::Cancelled => {
+                                                DaemonIpcResponse::DmenuCancelled
+                                            }
+                                        };
+                                        env.respond(resp);
+                                    }
+                                },
+                                cx,
+                            ) {
+                                Ok(h) => *dmenu_for_ipc.borrow_mut() = Some(h),
+                                Err(err) => {
+                                    if let Some(env) = env_cell.borrow_mut().take() {
+                                        env.respond(DaemonIpcResponse::Error {
+                                            message: err.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            return;
+                        }
+
+                        let Some(env_ref) = deferred_envelope.as_ref() else {
+                            return;
+                        };
+                        match &env_ref.command {
                             DaemonIpcCommand::Toggle => {
+                                if let Some(handle) = dmenu_for_ipc.borrow_mut().take() {
+                                    let _ =
+                                        handle.update(cx, |_, window, _| window.remove_window());
+                                }
                                 if let Some(handle) = win_for_ipc.borrow_mut().take() {
                                     let _ =
                                         handle.update(cx, |_, window, _| window.remove_window());
@@ -1780,12 +1921,20 @@ pub fn run_daemon_app(
                                 }
                             }
                             DaemonIpcCommand::Hide => {
+                                if let Some(handle) = dmenu_for_ipc.borrow_mut().take() {
+                                    let _ =
+                                        handle.update(cx, |_, window, _| window.remove_window());
+                                }
                                 if let Some(handle) = win_for_ipc.borrow_mut().take() {
                                     let _ =
                                         handle.update(cx, |_, window, _| window.remove_window());
                                 }
                             }
                             DaemonIpcCommand::Open { uri } => {
+                                if let Some(handle) = dmenu_for_ipc.borrow_mut().take() {
+                                    let _ =
+                                        handle.update(cx, |_, window, _| window.remove_window());
+                                }
                                 if let Some(handle) = *win_for_ipc.borrow() {
                                     let _ = handle.update(cx, |view, window, cx| {
                                         view.open_uri(uri, cx);
@@ -1809,7 +1958,8 @@ pub fn run_daemon_app(
                                 }
                             }
                             DaemonIpcCommand::Status => {
-                                let visible = win_for_ipc.borrow().is_some();
+                                let visible = win_for_ipc.borrow().is_some()
+                                    || dmenu_for_ipc.borrow().is_some();
                                 let theme_label = cx.global::<AiosTheme>().mode_label().to_string();
                                 reply = DaemonIpcResponse::Status(DaemonStatus {
                                     version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1823,9 +1973,12 @@ pub fn run_daemon_app(
                                     version: env!("CARGO_PKG_VERSION").to_string(),
                                 };
                             }
+                            DaemonIpcCommand::Dmenu(_) => {}
                         }
                     });
-                    envelope.respond(reply);
+                    if let Some(envelope) = deferred_envelope {
+                        envelope.respond(reply);
+                    }
                 }
             })
             .detach();
