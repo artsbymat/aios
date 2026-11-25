@@ -1,7 +1,13 @@
-//! Wayland platform integrations for AIOS (Hyprland, Niri, clipboard, XDG portal).
+//! Wayland platform integrations for AIOS (Hyprland, Niri, IPC socket, XDG portal).
+
+pub mod ipc;
+pub mod portal;
 
 use aios_core::Result;
 use serde::{Deserialize, Serialize};
+
+pub use ipc::{IpcClient, IpcEnvelope, IpcServer};
+pub use portal::{PortalThemeWatcher, decode_portal_color_scheme, read_system_color_scheme};
 
 /// Supported Wayland compositors with first-class IPC adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +25,18 @@ pub enum SystemColorScheme {
     NoPreference,
     PreferDark,
     PreferLight,
+}
+
+impl SystemColorScheme {
+    /// Converts portal preference to `system_prefers_dark` boolean for [`aios_core::ThemeMode::resolve`].
+    ///
+    /// Following `DESIGN.md` / `docs/ARCHITECTURE.md`:
+    /// - `PreferDark` (`1`) -> `true` (Dark)
+    /// - `PreferLight` (`2`) or `NoPreference` (`0`) -> `false` (Light)
+    #[must_use]
+    pub fn prefers_dark(self) -> bool {
+        matches!(self, Self::PreferDark)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +89,7 @@ pub trait CompositorAdapter: Send + Sync {
 }
 
 /// Detects the active Wayland compositor from standard environment variables.
+#[must_use]
 pub fn detect_compositor() -> CompositorKind {
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
         CompositorKind::Hyprland

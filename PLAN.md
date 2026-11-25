@@ -51,7 +51,7 @@ aios/
 | Phase 0 | Workspace Bootstrap & Foundation                                                           | `[x]` Completed |
 | Design  | FigCraft Design System (`DESIGN.md`, `fig/aios.figcraft`) & Official Brand Kit (`assets/`) | `[x]` Completed |
 | Phase 1 | Clean-Room Fuzzy Engine (`aios-fuzzy` + `instantMENU`-style parallel execution)            | `[x]` Completed |
-| Phase 2 | Wayland Shell, GPUI Core UI & Dual-Mode Theme Engine                                       | `[ ]` Pending   |
+| Phase 2 | Wayland Shell, GPUI Core UI & Dual-Mode Theme Engine                                       | `[x]` Completed |
 | Phase 3 | Root Search & Essential Built-in Plugins (MVP Daily Driver)                                | `[ ]` Pending   |
 | Phase 4 | Hybrid Plugin Runtime (WASM + Script Commands + SDK)                                       | `[ ]` Pending   |
 | Phase 5 | Full Raycast Built-in Productivity Suite                                                   | `[ ]` Pending   |
@@ -82,25 +82,25 @@ aios/
 - [x] Add adaptive parallel execution engine (inspired by `instantMENU`'s parallel search/filter/render pipeline): `<= 1.5ms` inline fast path for small lists, automatic `rayon` background handoff for large corpora, progressive Top-K snapshot updates, latest-wins query replacement, atomic per-keystroke cancellation, and benchmarks (target: < 5ms for 10,000 items, < 25ms for 100,000 items).
 - [x] **Exit Criteria**: Comprehensive unit test suite covering Unicode, camelCase, path boundaries, query operators, and benchmark suite passing (`106.5 ns` single item, `4.04 ms` 10k parallel, `13.06 ms` 100k parallel).
 
-### Phase 2: Wayland Shell, GPUI Core UI & Dual-Mode Theme Engine `[PENDING]`
+### Phase 2: Wayland Shell, GPUI Core UI & Dual-Mode Theme Engine `[DONE]`
 
 **Goal**: Deliver an instant-toggle Wayland overlay window on Hyprland and Niri with full `DESIGN.md` token fidelity.
 
-- [ ] Implement `aios-wayland` single-instance daemon + Unix socket IPC (`aios toggle`, `aios show`, `aios hide`, `aios open <uri>`).
-- [ ] Implement XDG Desktop Portal `color-scheme` listener for live Dark / Light / System switching.
-- [ ] Implement GPUI `WindowKind::LayerShell` overlay (`Layer::Overlay`, `KeyboardInteractivity::Exclusive`, namespace `"aios"`), centered with configurable top offset and monitor-aware focus.
-- [ ] Implement `aios-ui` theme tokens directly from [DESIGN.md](DESIGN.md) and core shell chrome:
-  - [ ] Header Search Bar + Inline Argument pills + Filter Dropdown + 2px loading bar
-  - [ ] Navigation Stack (`Push`, `Pop`, `PopToRoot`)
-  - [ ] Universal Footer Bar + Searchable `ActionPanel` popover (`Ctrl+K`)
-  - [ ] Feedback overlays: `Toast`, `HUD` (separate layer-shell overlay pill), `ConfirmAlert` modal
-  - [ ] Mandatory Empty, Loading, and Error view components
-- [ ] Implement **all 4 interactive declarative View renderers** in `aios-ui`:
-  - [ ] `List` (+ split `List.Item.Detail` Markdown/Metadata pane)
-  - [ ] `Grid` (multi-column aspect-locked tiles)
-  - [ ] `Detail` (Markdown + syntax highlighting + Metadata sidebar)
-  - [ ] `Form` (all field types + validation + keyboard focus order)
-- [ ] **Exit Criteria**: Launcher toggles cleanly via Hyprland and Niri keybinds, switches live between Dark and Light modes, and renders demo fixtures for all 4 views + ActionPanel using keyboard only.
+- [x] Implement `aios-wayland` single-instance daemon + Unix socket IPC (`aios toggle`, `aios show`, `aios hide`, `aios open <uri>`).
+- [x] Implement XDG Desktop Portal `color-scheme` listener for live Dark / Light / System switching.
+- [x] Implement GPUI `WindowKind::LayerShell` overlay (`Layer::Overlay`, `KeyboardInteractivity::Exclusive`, namespace `"aios"`), centered with configurable top offset and monitor-aware focus.
+- [x] Implement `aios-ui` theme tokens directly from [DESIGN.md](DESIGN.md) and core shell chrome:
+  - [x] Header Search Bar + Inline Argument pills + Filter Dropdown + 2px loading bar
+  - [x] Navigation Stack (`Push`, `Pop`, `PopToRoot`)
+  - [x] Universal Footer Bar + Searchable `ActionPanel` popover (`Ctrl+K`)
+  - [x] Feedback overlays: `Toast`, `HUD` (separate layer-shell overlay pill), `ConfirmAlert` modal
+  - [x] Mandatory Empty, Loading, and Error view components
+- [x] Implement **all 4 interactive declarative View renderers** in `aios-ui`:
+  - [x] `List` (+ split `List.Item.Detail` Markdown/Metadata pane)
+  - [x] `Grid` (multi-column aspect-locked tiles)
+  - [x] `Detail` (Markdown + syntax highlighting + Metadata sidebar)
+  - [x] `Form` (all field types + validation + keyboard focus order)
+- [x] **Exit Criteria**: Launcher toggles cleanly via Hyprland and Niri keybinds, switches live between Dark and Light modes, and renders demo fixtures for all 4 views + ActionPanel using keyboard only (`30/30` workspace tests + WCAG AA dark/light assertions passing).
 
 ### Phase 3: Root Search & Essential Built-in Plugins (MVP Daily Driver) `[PENDING]`
 

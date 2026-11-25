@@ -81,8 +81,8 @@ colors:
 
 typography:
   fontFamily:
-    sans: "IBM Plex Sans, Noto Sans, Cantarell, sans-serif"
-    mono: "IBM Plex Mono, Noto Sans Mono, monospace"
+    sans: "Inter Variable, Inter, Adwaita Sans, Noto Sans, sans-serif"
+    mono: "JetBrains Mono, Adwaita Mono, Noto Sans Mono, monospace"
   scale:
     searchInput: { size: "16px", lineHeight: "24px", weight: 400 }
     viewTitle: { size: "15px", lineHeight: "20px", weight: 600 }
@@ -225,8 +225,8 @@ All pairings are checked with WCAG 2.x luminance math (4.5:1 normal text, 3.0:1 
 
 ## Typography
 
-- **Primary Sans (`IBM Plex Sans`)**: Chosen for open apertures, crisp horizontal stems at 12px to 15px under Wayland fractional scaling (1.25x, 1.5x), and a technical character distinct from generic web defaults. Falls back cleanly to `Noto Sans` or `Cantarell`.
-- **Monospace (`IBM Plex Mono`)**: Used strictly for functional structured data: keyboard shortcut keycaps, calculator outputs, file paths, hex/RGB color values, process PIDs, and Markdown code blocks. Never used as oversized decorative headlines.
+- **Primary Sans (`Inter Variable`, embedded in `assets/fonts/InterVariable.ttf`)**: Chosen by product owner direction for crisp optical legibility at 11px to 16px across Wayland fractional scaling (`1.25x`, `1.5x`) with bundled binary consistency across Linux distributions.
+- **Monospace (`JetBrains Mono`, embedded in `assets/fonts/JetBrainsMonoVariable.ttf`)**: Used strictly for functional structured data: keyboard shortcut keycaps, calculator outputs, file paths, hex/RGB color values, process PIDs, and Markdown code blocks. Never used as oversized decorative headlines.
 - **Tabular Numerals (`tnum`)**: Enabled on all numeric accessories (CPU%, RAM, timestamps, calculator values) so columns align vertically during rapid scanning.
 - **Fuzzy Match Highlighting**: Characters indexed by `aios-fuzzy` (`MatchResult.indices`) render in `font-weight: 600` + `accent.fg` (or `accent.fgOnSelected` on selected rows) with a subtle underline cue on high-contrast/colorblind mode so matches remain legible without relying on hue alone.
 

@@ -15,9 +15,18 @@ pub enum DaemonIpcCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonStatus {
+    pub version: String,
+    pub visible: bool,
+    pub compositor: String,
+    pub active_theme: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum DaemonIpcResponse {
     Ok,
     Pong { version: String },
+    Status(DaemonStatus),
     Error { message: String },
 }

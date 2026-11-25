@@ -30,7 +30,10 @@ aios-ui = { path = "crates/aios-ui" }
 aios-daemon = { path = "crates/aios-daemon" }
 
 anyhow = "1.0"
+async-channel = "2.5"
 clap = { version = "4.6", features = ["derive"] }
+gpui = { package = "gpui-ce", version = "0.3.0", default-features = false, features = ["wayland", "font-kit", "image-default-formats"] }
+gpui_platform = { package = "gpui_ce_platform", version = "0.3.0", features = ["wayland"] }
 rayon = "1.11"
 rusqlite = "0.38"
 serde = { version = "1.0", features = ["derive"] }
@@ -40,6 +43,7 @@ thiserror = "2.0"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+zbus = { version = "5.19", default-features = false, features = ["blocking-api"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
