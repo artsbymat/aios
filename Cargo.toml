@@ -31,6 +31,7 @@ aios-daemon = { path = "crates/aios-daemon" }
 
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive"] }
+rayon = "1.11"
 rusqlite = "0.38"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

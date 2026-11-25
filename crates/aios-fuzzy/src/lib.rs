@@ -1,7 +1,27 @@
-//! Clean-room fuzzy matching and ranking engine for AIOS.
+//! Clean-room fuzzy matching, query parsing, frecency ranking, and adaptive parallel
+//! search engine for AIOS.
 //!
-//! Full Smith-Waterman DP scoring, query syntax parsing, and frecency blending
-//! are scheduled for Phase 1 (see `docs/FUZZY_SPEC.md`).
+//! Inspired by `skim`'s `SkimMatcherV2` scoring and query syntax alongside `instantMENU`'s
+//! adaptive inline + progressive parallel execution architecture, implemented purely in Rust
+//! with zero `skim` or `fuzzy-matcher` dependencies.
+
+pub mod frecency;
+pub mod parallel;
+pub mod query;
+pub mod scorer;
+
+pub use frecency::{
+    FrecencyConfig, FrecencyRecord, compute_frecency_boost, decay_weight, score_item,
+};
+pub use parallel::{
+    CancellationToken, FrecencyMap, RankedItem, SearchConfig, SearchHandle, SearchSession,
+    SearchSnapshot, search_parallel,
+};
+pub use query::{
+    AndEngine, ExactEngine, ExactFullEngine, FuzzyEngine, InverseEngine, MatchAllEngine, OrEngine,
+    PrefixEngine, QueryEngineFactory, QueryParser, SuffixEngine,
+};
+pub use scorer::SkimV2Matcher;
 
 /// A searchable entry indexed by AIOS Root Search or a plugin view.
 pub trait SearchItem: Send + Sync {
