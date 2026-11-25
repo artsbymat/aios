@@ -1,0 +1,12 @@
+[package]
+name = "aios-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aios-core = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

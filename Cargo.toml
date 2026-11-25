@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/aios-fuzzy",
+    "crates/aios-core",
+    "crates/aios-wayland",
+    "crates/aios-plugin-sdk",
+    "crates/aios-plugin-host",
+    "crates/aios-builtin",
+    "crates/aios-ui",
+    "crates/aios-daemon",
+    "crates/aios-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/rahmat/aios"
+rust-version = "1.85"
+
+[workspace.dependencies]
+aios-fuzzy = { path = "crates/aios-fuzzy" }
+aios-core = { path = "crates/aios-core" }
+aios-wayland = { path = "crates/aios-wayland" }
+aios-plugin-sdk = { path = "crates/aios-plugin-sdk" }
+aios-plugin-host = { path = "crates/aios-plugin-host" }
+aios-builtin = { path = "crates/aios-builtin" }
+aios-ui = { path = "crates/aios-ui" }
+aios-daemon = { path = "crates/aios-daemon" }
+
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+rusqlite = "0.38"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.27"
+thiserror = "2.0"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"

@@ -1,0 +1,404 @@
+//! SQLite WAL persistence layer and versioned schema migrations for AIOS.
+
+use crate::error::{AiosError, Result};
+use rusqlite::{Connection, OptionalExtension, params};
+use std::path::Path;
+
+pub const LATEST_SCHEMA_VERSION: u32 = 1;
+
+struct Migration {
+    version: u32,
+    name: &'static str,
+    sql: &'static str,
+}
+
+const MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "initial_core_schema",
+    sql: r#"
+        CREATE TABLE IF NOT EXISTS frecency (
+            item_id TEXT NOT NULL,
+            query_prefix TEXT NOT NULL DEFAULT '',
+            hits INTEGER NOT NULL DEFAULT 1,
+            last_used_at INTEGER NOT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (item_id, query_prefix)
+        );
+        CREATE INDEX IF NOT EXISTS idx_frecency_item ON frecency(item_id);
+        CREATE INDEX IF NOT EXISTS idx_frecency_last_used ON frecency(last_used_at DESC);
+
+        CREATE TABLE IF NOT EXISTS clipboard_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content_hash TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            text_preview TEXT,
+            blob_path TEXT,
+            source_app TEXT,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            last_used_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_clipboard_pinned_used
+            ON clipboard_entries(pinned DESC, last_used_at DESC);
+
+        CREATE TABLE IF NOT EXISTS snippets (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            keyword TEXT UNIQUE,
+            content TEXT NOT NULL,
+            folder TEXT NOT NULL DEFAULT '',
+            use_count INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS quicklinks (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            template_url TEXT NOT NULL,
+            icon TEXT,
+            open_with TEXT,
+            use_count INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS notes (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body_markdown TEXT NOT NULL DEFAULT '',
+            pinned INTEGER NOT NULL DEFAULT 0,
+            deleted_at INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_notes_active_updated
+            ON notes(deleted_at, pinned DESC, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS plugin_storage (
+            plugin_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value_blob BLOB NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (plugin_id, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS plugin_permissions (
+            plugin_id TEXT NOT NULL,
+            capability TEXT NOT NULL,
+            granted INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (plugin_id, capability)
+        );
+    "#,
+}];
+
+/// Local SQLite database handle configured with WAL mode and foreign keys.
+#[derive(Debug)]
+pub struct Database {
+    conn: Connection,
+}
+
+impl Database {
+    /// Opens (or creates) the SQLite database at `path`, enables WAL mode, and runs pending migrations.
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| AiosError::IoPath {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let conn = Connection::open(path)?;
+        let mut db = Self { conn };
+        db.configure_pragmas(true)?;
+        db.migrate()?;
+        Ok(db)
+    }
+
+    /// Opens an in-memory SQLite database with all migrations applied (useful for tests).
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        let mut db = Self { conn };
+        db.configure_pragmas(false)?;
+        db.migrate()?;
+        Ok(db)
+    }
+
+    fn configure_pragmas(&self, enable_wal: bool) -> Result<()> {
+        self.conn.pragma_update(None, "foreign_keys", "ON")?;
+        self.conn.pragma_update(None, "busy_timeout", 5000_i64)?;
+        if enable_wal {
+            let _: String =
+                self.conn
+                    .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+            self.conn.pragma_update(None, "synchronous", "NORMAL")?;
+        }
+        Ok(())
+    }
+
+    /// Applies any unapplied schema migrations transactionally and idempotently.
+    pub fn migrate(&mut self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );",
+        )?;
+
+        let current = self.schema_version()?;
+        for migration in MIGRATIONS {
+            if migration.version <= current {
+                continue;
+            }
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(migration.sql)
+                .map_err(|source| AiosError::Migration {
+                    version: migration.version,
+                    name: migration.name,
+                    source,
+                })?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
+                params![migration.version, migration.name],
+            )
+            .map_err(|source| AiosError::Migration {
+                version: migration.version,
+                name: migration.name,
+                source,
+            })?;
+            tx.commit()?;
+            tracing::info!(
+                version = migration.version,
+                name = migration.name,
+                "applied sqlite migration"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn schema_version(&self) -> Result<u32> {
+        let version: Option<u32> = self
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .flatten();
+        Ok(version.unwrap_or(0))
+    }
+
+    pub fn journal_mode(&self) -> Result<String> {
+        let mode: String = self
+            .conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+        Ok(mode)
+    }
+
+    pub fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Scoped plugin key-value read used by `host-api::storage-get`.
+    pub fn plugin_storage_get(&self, plugin_id: &str, key: &str) -> Result<Option<Vec<u8>>> {
+        let value = self
+            .conn
+            .query_row(
+                "SELECT value_blob FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
+                params![plugin_id, key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value)
+    }
+
+    /// Scoped plugin key-value upsert used by `host-api::storage-set`.
+    pub fn plugin_storage_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: &[u8],
+        now_epoch: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO plugin_storage (plugin_id, key, value_blob, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(plugin_id, key) DO UPDATE SET
+                value_blob = excluded.value_blob,
+                updated_at = excluded.updated_at",
+            params![plugin_id, key, value, now_epoch],
+        )?;
+        Ok(())
+    }
+
+    /// Scoped plugin key-value delete used by `host-api::storage-remove`.
+    pub fn plugin_storage_remove(&self, plugin_id: &str, key: &str) -> Result<bool> {
+        let affected = self.conn.execute(
+            "DELETE FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
+            params![plugin_id, key],
+        )?;
+        Ok(affected > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    const EXPECTED_TABLES: &[&str] = &[
+        "schema_migrations",
+        "frecency",
+        "clipboard_entries",
+        "snippets",
+        "quicklinks",
+        "notes",
+        "plugin_storage",
+        "plugin_permissions",
+    ];
+
+    #[test]
+    fn on_disk_database_enables_wal_and_applies_migrations_idempotently() {
+        let tmp = TempDir::new().expect("temp dir");
+        let db_path = tmp.path().join("data").join("aios.db");
+
+        let mut db = Database::open(&db_path).expect("open sqlite db");
+        assert_eq!(
+            db.journal_mode().expect("journal mode").to_lowercase(),
+            "wal"
+        );
+        assert_eq!(
+            db.schema_version().expect("schema version"),
+            LATEST_SCHEMA_VERSION
+        );
+
+        // Re-running migrate and reopening must be completely idempotent.
+        db.migrate().expect("idempotent migrate");
+        drop(db);
+
+        let reopened = Database::open(&db_path).expect("reopen sqlite db");
+        assert_eq!(
+            reopened.schema_version().expect("reopened version"),
+            LATEST_SCHEMA_VERSION
+        );
+
+        for table in EXPECTED_TABLES {
+            let exists: bool = reopened
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .expect("check table existence");
+            assert!(exists, "expected table {table} to exist");
+        }
+    }
+
+    #[test]
+    fn plugin_kv_storage_round_trip_and_isolation() {
+        let db = Database::open_in_memory().expect("in-memory db");
+
+        db.plugin_storage_set("com.example.a", "token", b"alpha", 1_700_000_000)
+            .expect("set plugin a");
+        db.plugin_storage_set("com.example.b", "token", b"beta", 1_700_000_001)
+            .expect("set plugin b");
+
+        assert_eq!(
+            db.plugin_storage_get("com.example.a", "token")
+                .expect("get a"),
+            Some(b"alpha".to_vec())
+        );
+        assert_eq!(
+            db.plugin_storage_get("com.example.b", "token")
+                .expect("get b"),
+            Some(b"beta".to_vec())
+        );
+
+        db.plugin_storage_set("com.example.a", "token", b"alpha-v2", 1_700_000_002)
+            .expect("upsert plugin a");
+        assert_eq!(
+            db.plugin_storage_get("com.example.a", "token")
+                .expect("get a updated"),
+            Some(b"alpha-v2".to_vec())
+        );
+
+        assert!(
+            db.plugin_storage_remove("com.example.a", "token")
+                .expect("remove a")
+        );
+        assert_eq!(
+            db.plugin_storage_get("com.example.a", "token")
+                .expect("get a deleted"),
+            None
+        );
+        assert_eq!(
+            db.plugin_storage_get("com.example.b", "token")
+                .expect("b unaffected"),
+            Some(b"beta".to_vec())
+        );
+    }
+
+    #[test]
+    fn core_tables_accept_valid_records() {
+        let db = Database::open_in_memory().expect("in-memory db");
+        let conn = db.connection();
+
+        conn.execute(
+            "INSERT INTO frecency (item_id, query_prefix, hits, last_used_at, pinned)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["app:firefox", "ff", 5, 1_700_000_100, 1],
+        )
+        .expect("insert frecency");
+
+        conn.execute(
+            "INSERT INTO clipboard_entries (content_hash, kind, mime_type, text_preview, source_app, created_at, last_used_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params!["hash123", "text", "text/plain", "hello wayland", "alacritty", 1_700_000_100, 1_700_000_100],
+        )
+        .expect("insert clipboard");
+
+        conn.execute(
+            "INSERT INTO snippets (id, name, keyword, content, folder, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "sn1",
+                "Work Email",
+                ";mail",
+                "me@example.org",
+                "Personal",
+                1_700_000_100,
+                1_700_000_100
+            ],
+        )
+        .expect("insert snippet");
+
+        conn.execute(
+            "INSERT INTO quicklinks (id, name, template_url, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                "ql1",
+                "Rust Docs",
+                "https://docs.rs/{query}",
+                1_700_000_100,
+                1_700_000_100
+            ],
+        )
+        .expect("insert quicklink");
+
+        conn.execute(
+            "INSERT INTO notes (id, title, body_markdown, pinned, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params!["n1", "Scratch", "# Notes", 0, 1_700_000_100, 1_700_000_100],
+        )
+        .expect("insert note");
+
+        conn.execute(
+            "INSERT INTO plugin_permissions (plugin_id, capability, granted, updated_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["com.example.docker", "clipboard_write", 1, 1_700_000_100],
+        )
+        .expect("insert permission");
+    }
+}

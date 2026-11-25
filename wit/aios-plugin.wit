@@ -1,0 +1,60 @@
+package aios:plugin@0.1.0;
+
+interface host-api {
+    enum toast-style {
+        animated,
+        success,
+        failure,
+    }
+
+    record toast {
+        style: toast-style,
+        title: string,
+        message: option<string>,
+    }
+
+    record http-request-spec {
+        method: string,
+        url: string,
+        headers: list<tuple<string, string>>,
+        body: option<list<u8>>,
+    }
+
+    record http-response {
+        status: u16,
+        headers: list<tuple<string, string>>,
+        body: list<u8>,
+    }
+
+    show-toast: func(t: toast);
+    show-hud: func(title: string);
+    close-main-window: func();
+    pop-to-root: func();
+
+    storage-get: func(key: string) -> option<list<u8>>;
+    storage-set: func(key: string, val: list<u8>) -> result<_, string>;
+    storage-remove: func(key: string) -> result<_, string>;
+    cache-get: func(key: string) -> option<list<u8>>;
+    cache-set: func(key: string, val: list<u8>, ttl-seconds: u64);
+
+    get-preference: func(name: string) -> option<string>;
+    get-theme-mode: func() -> string;
+
+    clipboard-read-text: func() -> result<option<string>, string>;
+    clipboard-write-text: func(text: string) -> result<_, string>;
+    secret-get: func(key: string) -> result<option<string>, string>;
+    secret-set: func(key: string, val: string) -> result<_, string>;
+    http-request: func(req: http-request-spec) -> result<http-response, string>;
+}
+
+interface lifecycle {
+    init-command: func(command-id: string, args-json: string) -> result<string, string>;
+    handle-event: func(event-json: string) -> result<string, string>;
+    background-refresh: func(command-id: string) -> result<string, string>;
+    dispose: func();
+}
+
+world aios-extension {
+    import host-api;
+    export lifecycle;
+}

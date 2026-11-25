@@ -1,0 +1,12 @@
+[package]
+name = "aios-wayland"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aios-core = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true
