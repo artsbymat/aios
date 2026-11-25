@@ -53,7 +53,7 @@ aios/
 | Phase 1 | Clean-Room Fuzzy Engine (`aios-fuzzy` + `instantMENU`-style parallel execution)            | `[x]` Completed |
 | Phase 2 | Wayland Shell, GPUI Core UI & Dual-Mode Theme Engine                                       | `[x]` Completed |
 | Phase 3 | Root Search Orchestrator & Application Launcher (Core MVP)                                 | `[x]` Completed |
-| Phase 4 | Hybrid Plugin Runtime (WASM + Script Commands + SDK)                                       | `[ ]` Pending     |
+| Phase 4 | Hybrid Plugin Runtime (WASM + Script Commands + SDK)                                       | `[x]` Completed |
 | Phase 5 | First-Party External Plugins Suite (Calc, WM, Clipboard, Files, Snippets, etc.)            | `[ ]` Pending     |
 | Phase 6 | Polish, Packaging & Plugin Ecosystem Readiness                                             | `[ ]` Pending   |
 
@@ -112,20 +112,20 @@ aios/
 
 *Architectural Scope Note*: Inline Calculator & Converter, Quicklinks, Window Management (Hyprland & Niri), and System Commands are intentionally decoupled from core and implemented as **External Plugins** on top of the Phase 4 Hybrid Plugin Runtime (tracked in Phase 5).
 
-### Phase 4: Hybrid Plugin Runtime (WASM + Script Commands + SDK) `[PENDING]`
+### Phase 4: Hybrid Plugin Runtime (WASM + Script Commands + SDK) `[DONE]`
 
 **Goal**: Enable third-party and user-authored multi-view plugins safely in Pure Rust.
 
-- [ ] Finalize `wit/aios-plugin.wit` interface covering all 6 command modes (`List`, `Grid`, `Detail`, `Form`, `NoView`, `MenuBar`), actions, navigation, preferences, `LocalStorage`, `Cache`, clipboard, HTTP/FS capabilities, and `Toast`/`HUD`/`Alert`.
-- [ ] Implement `aios-plugin-host` using `wasmtime` with WebAssembly Component Model:
-  - [ ] Capability permission checker (`aios-plugin.toml`)
-  - [ ] Epoch/fuel interruption timeouts so misbehaving plugins never freeze the UI
-  - [ ] Crash isolation (plugin panic renders clean ErrorView with logs + reload action)
-  - [ ] Hot-reload watcher for local plugin development (`aios plugin dev <path>`)
-- [ ] Implement `aios-plugin-sdk` crate so plugin authors write idiomatic Rust declarative views compiled to `wasm32-wasip2`.
-- [ ] Implement **Script Commands** runner (metadata header parser, `compact`/`fullOutput`/`inline`/`silent` modes, arguments, confirmation prompts).
-- [ ] Implement **Settings & Extension Manager View** (built using AIOS's own multi-view UI): manage themes, aliases, hotkeys, fallback commands, plugin preferences, capability approvals, and local plugin install/uninstall.
-- [ ] **Exit Criteria**: At least two reference external WASM plugins (one `List+Detail` view, one `Grid` or `Form` view) and two Script Commands run end-to-end inside AIOS with full isolation.
+- [x] Finalize `wit/aios-plugin.wit` interface covering all 6 command modes (`List`, `Grid`, `Detail`, `Form`, `NoView`, `MenuBar`), actions, navigation, preferences, `LocalStorage`, `Cache`, clipboard, HTTP/FS capabilities, and `Toast`/`HUD`/`Alert`.
+- [x] Implement `aios-plugin-host` using `wasmtime` with WebAssembly Component Model:
+  - [x] Capability permission checker (`aios-plugin.toml`)
+  - [x] Epoch/fuel interruption timeouts so misbehaving plugins never freeze the UI
+  - [x] Crash isolation (plugin panic renders clean ErrorView with logs + reload action)
+  - [x] Hot-reload watcher for local plugin development (`aios plugin dev <path>`)
+- [x] Implement `aios-plugin-sdk` crate so plugin authors write idiomatic Rust declarative views compiled to `wasm32-wasip2`.
+- [x] Implement **Script Commands** runner (metadata header parser, `compact`/`fullOutput`/`inline`/`silent` modes, arguments, confirmation prompts).
+- [x] Implement **Settings & Extension Manager View** (built using AIOS's own multi-view UI): manage themes, aliases, hotkeys, fallback commands, plugin preferences, capability approvals, and local plugin install/uninstall.
+- [x] **Exit Criteria**: At least two reference external WASM plugins (`com.aios.quick-notes` `List+Detail`, `com.aios.palette-grid` `Grid+Form`) and two Script Commands (`system-uptime.sh`, `disk-usage.sh`) run end-to-end inside AIOS with full isolation (`46/46` workspace tests, zero clippy warnings).
 
 ### Phase 5: First-Party External Plugins Suite `[PENDING]`
 

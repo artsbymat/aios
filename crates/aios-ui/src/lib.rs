@@ -11,7 +11,7 @@ pub mod theme;
 pub mod views;
 
 pub use fonts::register_embedded_fonts;
-pub use shell::{LauncherWindow, run_daemon_app, run_preview_app};
+pub use shell::{LauncherWindow, run_daemon_app, run_dev_plugin_app, run_preview_app};
 pub use state::{ActiveOverlay, HeaderFocus, LauncherState, NavFrame, ShellEffect};
 pub use theme::{
     AiosTheme, DARK_PALETTE, LIGHT_PALETTE, ThemeColors, ThemeMetrics, ThemePalette, palette_for,

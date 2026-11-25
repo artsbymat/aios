@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aios_core::config::AiosConfig;
@@ -22,6 +22,22 @@ use crate::desktop::{
     DesktopApp, launch_desktop_app, open_url_detached, scan_desktop_applications,
 };
 
+/// External plugin or Script Command entry projected into Root Search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalRootEntry {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub badge: String,
+    pub icon_path: Option<String>,
+    pub keywords: Vec<String>,
+    pub filter_group: &'static str,
+    pub action_id: String,
+    pub secondary_action_id: Option<(String, String)>,
+    pub tag_label: String,
+    pub inline_summary: Option<String>,
+}
+
 /// Kind of entry indexed in AIOS Root Search.
 #[derive(Debug, Clone)]
 pub enum RootEntryKind {
@@ -32,6 +48,7 @@ pub enum RootEntryKind {
         badge: String,
         keywords: Vec<String>,
     },
+    External(Box<ExternalRootEntry>),
 }
 
 /// One searchable entry in the Root Search corpus.
@@ -92,7 +109,9 @@ pub enum RootActionOutcome {
 #[derive(Debug)]
 pub struct RootSearchOrchestrator {
     config: AiosConfig,
-    db: Option<Database>,
+    db: Option<Arc<Mutex<Database>>>,
+    apps: Vec<DesktopApp>,
+    external_entries: Vec<ExternalRootEntry>,
     entries: Arc<[RootEntry]>,
     hidden_ids: HashSet<String>,
     frecency_cache: FrecencyMap,
@@ -104,20 +123,40 @@ impl RootSearchOrchestrator {
     #[must_use]
     pub fn new(config: AiosConfig, db: Option<Database>) -> Self {
         let apps = scan_desktop_applications();
-        Self::from_apps(config, db, apps)
+        Self::from_apps_shared(config, db.map(|d| Arc::new(Mutex::new(d))), apps)
+    }
+
+    /// Initializes Root Search using a shared SQLite handle (shared with `PluginHost`).
+    #[must_use]
+    pub fn new_shared(config: AiosConfig, db: Arc<Mutex<Database>>) -> Self {
+        let apps = scan_desktop_applications();
+        Self::from_apps_shared(config, Some(db), apps)
     }
 
     /// Creates an orchestrator from a pre-supplied list of apps (ideal for deterministic tests).
     #[must_use]
     pub fn from_apps(config: AiosConfig, db: Option<Database>, apps: Vec<DesktopApp>) -> Self {
+        Self::from_apps_shared(config, db.map(|d| Arc::new(Mutex::new(d))), apps)
+    }
+
+    /// Creates an orchestrator from a shared SQLite handle and pre-supplied app list.
+    #[must_use]
+    pub fn from_apps_shared(
+        config: AiosConfig,
+        db: Option<Arc<Mutex<Database>>>,
+        apps: Vec<DesktopApp>,
+    ) -> Self {
         let hidden_ids = db
             .as_ref()
-            .and_then(|d| d.list_hidden_items().ok())
+            .and_then(|d| d.lock().ok())
+            .and_then(|guard| guard.list_hidden_items().ok())
             .unwrap_or_default();
-        let entries = build_corpus(&config, apps);
+        let entries = build_corpus(&config, &apps, &[]);
         let mut orchestrator = Self {
             config,
             db,
+            apps,
+            external_entries: Vec::new(),
             entries: entries.into(),
             hidden_ids,
             frecency_cache: HashMap::new(),
@@ -127,13 +166,20 @@ impl RootSearchOrchestrator {
         orchestrator
     }
 
+    /// Replaces the list of external WASM plugin commands and Script Commands indexed in Root Search.
+    pub fn set_external_entries(&mut self, external: Vec<ExternalRootEntry>) {
+        self.external_entries = external;
+        self.entries = build_corpus(&self.config, &self.apps, &self.external_entries).into();
+    }
+
     /// Re-scans XDG `.desktop` directories and refreshes hidden/frecency state.
     pub fn reload_applications(&mut self) -> usize {
-        let apps = scan_desktop_applications();
-        let count = apps.len();
-        self.entries = build_corpus(&self.config, apps).into();
+        self.apps = scan_desktop_applications();
+        let count = self.apps.len();
+        self.entries = build_corpus(&self.config, &self.apps, &self.external_entries).into();
         if let Some(db) = &self.db
-            && let Ok(hidden) = db.list_hidden_items()
+            && let Ok(guard) = db.lock()
+            && let Ok(hidden) = guard.list_hidden_items()
         {
             self.hidden_ids = hidden;
         }
@@ -158,7 +204,10 @@ impl RootSearchOrchestrator {
         let Some(db) = &self.db else {
             return;
         };
-        if let Ok(rows) = db.load_frecency_records(query) {
+        let Ok(guard) = db.lock() else {
+            return;
+        };
+        if let Ok(rows) = guard.load_frecency_records(query) {
             self.frecency_cache = rows
                 .into_iter()
                 .map(|(id, rec)| {
@@ -226,6 +275,7 @@ impl RootSearchOrchestrator {
                 let mut pinned_items = Vec::new();
                 let mut frequent_items = Vec::new();
                 let mut app_items = Vec::new();
+                let mut extension_items = Vec::new();
                 let mut command_items = Vec::new();
 
                 for ranked in &snap.matches {
@@ -242,6 +292,7 @@ impl RootSearchOrchestrator {
                     } else {
                         match entry.kind {
                             RootEntryKind::Application(_) => app_items.push(list_item),
+                            RootEntryKind::External(_) => extension_items.push(list_item),
                             RootEntryKind::CoreCommand { .. } => command_items.push(list_item),
                         }
                     }
@@ -259,6 +310,13 @@ impl RootSearchOrchestrator {
                         title: Some("Recent & Frequent".to_string()),
                         subtitle: Some(format!("{}", frequent_items.len())),
                         items: frequent_items,
+                    });
+                }
+                if !extension_items.is_empty() {
+                    sections.push(ListSection {
+                        title: Some("Plugins & Scripts".to_string()),
+                        subtitle: Some(format!("{}", extension_items.len())),
+                        items: extension_items,
                     });
                 }
                 if !app_items.is_empty() {
@@ -421,8 +479,10 @@ impl RootSearchOrchestrator {
             };
         }
         if let Some(item_id) = action_id.strip_prefix("app.pin:") {
-            if let Some(db) = &self.db {
-                let _ = db.set_item_pinned(item_id, true, now);
+            if let Some(db) = &self.db
+                && let Ok(guard) = db.lock()
+            {
+                let _ = guard.set_item_pinned(item_id, true, now);
             }
             self.frecency_cache
                 .entry(item_id.to_owned())
@@ -433,8 +493,10 @@ impl RootSearchOrchestrator {
             };
         }
         if let Some(item_id) = action_id.strip_prefix("app.unpin:") {
-            if let Some(db) = &self.db {
-                let _ = db.set_item_pinned(item_id, false, now);
+            if let Some(db) = &self.db
+                && let Ok(guard) = db.lock()
+            {
+                let _ = guard.set_item_pinned(item_id, false, now);
             }
             if let Some(rec) = self.frecency_cache.get_mut(item_id) {
                 rec.pinned = false;
@@ -444,8 +506,10 @@ impl RootSearchOrchestrator {
             };
         }
         if let Some(item_id) = action_id.strip_prefix("app.hide:") {
-            if let Some(db) = &self.db {
-                let _ = db.set_item_hidden(item_id, true, now);
+            if let Some(db) = &self.db
+                && let Ok(guard) = db.lock()
+            {
+                let _ = guard.set_item_hidden(item_id, true, now);
             }
             self.hidden_ids.insert(item_id.to_owned());
             return RootActionOutcome::Refresh {
@@ -461,8 +525,10 @@ impl RootSearchOrchestrator {
                 }
             }
             "root.unhide-all" => {
-                if let Some(db) = &self.db {
-                    let _ = db.clear_hidden_items();
+                if let Some(db) = &self.db
+                    && let Ok(guard) = db.lock()
+                {
+                    let _ = guard.clear_hidden_items();
                 }
                 let restored = self.hidden_ids.len();
                 self.hidden_ids.clear();
@@ -501,8 +567,10 @@ impl RootSearchOrchestrator {
 
         match launch_desktop_app(&app, force_terminal) {
             Ok(()) => {
-                if let Some(db) = &self.db {
-                    let _ = db.record_frecency_hit(&app.id, active_query, now);
+                if let Some(db) = &self.db
+                    && let Ok(guard) = db.lock()
+                {
+                    let _ = guard.record_frecency_hit(&app.id, active_query, now);
                 }
                 let rec = self.frecency_cache.entry(app.id.clone()).or_default();
                 rec.hits = rec.hits.saturating_add(1);
@@ -700,17 +768,62 @@ impl RootSearchOrchestrator {
                     ]),
                 }
             }
+            RootEntryKind::External(ext) => {
+                let mut accessories = Vec::new();
+                if let Some(summary) = &ext.inline_summary {
+                    accessories.push(Accessory::Text {
+                        value: summary.clone(),
+                    });
+                }
+                if let Some(alias) = &entry.alias {
+                    accessories.push(Accessory::Text {
+                        value: format!("alias: {alias}"),
+                    });
+                }
+                accessories.push(Accessory::Tag {
+                    label: ext.tag_label.clone(),
+                    tone: SemanticTone::Accent,
+                });
+
+                let mut actions = vec![
+                    ActionItem::new(ext.action_id.clone(), format!("Open {}", ext.title))
+                        .shortcut("Enter"),
+                ];
+                if let Some((sec_id, sec_title)) = &ext.secondary_action_id {
+                    actions.push(
+                        ActionItem::new(sec_id.clone(), sec_title.clone()).shortcut("Ctrl+Enter"),
+                    );
+                }
+
+                ListItem {
+                    id: ext.id.clone(),
+                    title: ext.title.clone(),
+                    subtitle: Some(ext.subtitle.clone()),
+                    icon: Some(ext.badge.clone()),
+                    icon_path: ext.icon_path.clone(),
+                    alias: entry.alias.clone(),
+                    keywords: ext.keywords.clone(),
+                    filter_group: Some(ext.filter_group.to_string()),
+                    accessories,
+                    detail: None,
+                    actions: ActionPanel::from_actions(actions),
+                }
+            }
         }
     }
 }
 
-fn build_corpus(config: &AiosConfig, apps: Vec<DesktopApp>) -> Vec<RootEntry> {
+fn build_corpus(
+    config: &AiosConfig,
+    apps: &[DesktopApp],
+    external: &[ExternalRootEntry],
+) -> Vec<RootEntry> {
     let mut alias_by_target: HashMap<&str, &str> = HashMap::new();
     for (alias, target) in &config.aliases {
         alias_by_target.insert(target.as_str(), alias.as_str());
     }
 
-    let mut entries = Vec::with_capacity(apps.len() + 6);
+    let mut entries = Vec::with_capacity(apps.len() + external.len() + 6);
 
     for app in apps {
         let alias = alias_by_target
@@ -726,11 +839,41 @@ fn build_corpus(config: &AiosConfig, apps: Vec<DesktopApp>) -> Vec<RootEntry> {
             alias,
             keywords: app.keywords.clone(),
             filter_group: "apps",
-            kind: RootEntryKind::Application(Box::new(app)),
+            kind: RootEntryKind::Application(Box::new(app.clone())),
+        });
+    }
+
+    for ext in external {
+        let alias = alias_by_target
+            .get(ext.id.as_str())
+            .map(|a| (*a).to_owned());
+        entries.push(RootEntry {
+            id: ext.id.clone(),
+            title: ext.title.clone(),
+            subtitle: Some(ext.subtitle.clone()),
+            alias,
+            keywords: ext.keywords.clone(),
+            filter_group: ext.filter_group,
+            kind: RootEntryKind::External(Box::new(ext.clone())),
         });
     }
 
     let core_commands = [
+        (
+            "core:settings",
+            "Settings & Extensions",
+            "Manage themes, aliases, WASM plugins, capabilities, and scripts",
+            "ST",
+            "core.open-settings",
+            vec![
+                "settings",
+                "extensions",
+                "plugins",
+                "scripts",
+                "preferences",
+                "capabilities",
+            ],
+        ),
         (
             "core:reload-apps",
             "Reload Application Index",

@@ -374,6 +374,158 @@ impl Database {
         let _ = self.plugin_storage_remove("aios.applications", "hidden_items")?;
         Ok(())
     }
+
+    /// Reads whether a specific capability has been explicitly granted (`Some(true)`),
+    /// denied (`Some(false)`), or not yet decided (`None`) for `plugin_id`.
+    pub fn get_plugin_permission(&self, plugin_id: &str, capability: &str) -> Result<Option<bool>> {
+        let granted: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT granted FROM plugin_permissions WHERE plugin_id = ?1 AND capability = ?2",
+                params![plugin_id, capability],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(granted.map(|v| v != 0))
+    }
+
+    /// Persists a user capability decision (`granted = true | false`) for `plugin_id`.
+    pub fn set_plugin_permission(
+        &self,
+        plugin_id: &str,
+        capability: &str,
+        granted: bool,
+        now_epoch: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO plugin_permissions (plugin_id, capability, granted, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(plugin_id, capability) DO UPDATE SET
+                granted = excluded.granted,
+                updated_at = excluded.updated_at",
+            params![plugin_id, capability, i64::from(granted), now_epoch],
+        )?;
+        Ok(())
+    }
+
+    /// Lists all persisted capability grants for `plugin_id`.
+    pub fn list_plugin_permissions(&self, plugin_id: &str) -> Result<HashMap<String, bool>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT capability, granted FROM plugin_permissions WHERE plugin_id = ?1")?;
+        let rows = stmt.query_map(params![plugin_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (cap, granted) = row?;
+            map.insert(cap, granted);
+        }
+        Ok(map)
+    }
+
+    /// Deletes all persisted permission grants and scoped KV data for an uninstalled plugin.
+    pub fn purge_plugin_state(&self, plugin_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM plugin_permissions WHERE plugin_id = ?1",
+            params![plugin_id],
+        )?;
+        let pref_ns = format!("__pref__:{plugin_id}");
+        let cache_ns = format!("__cache__:{plugin_id}");
+        let secret_ns = format!("__secret__:{plugin_id}");
+        self.conn.execute(
+            "DELETE FROM plugin_storage WHERE plugin_id IN (?1, ?2, ?3, ?4)",
+            params![plugin_id, pref_ns, cache_ns, secret_ns],
+        )?;
+        Ok(())
+    }
+
+    /// Reads a persisted plugin preference value.
+    pub fn get_plugin_preference(&self, plugin_id: &str, name: &str) -> Result<Option<String>> {
+        let ns = format!("__pref__:{plugin_id}");
+        let Some(bytes) = self.plugin_storage_get(&ns, name)? else {
+            return Ok(None);
+        };
+        Ok(String::from_utf8(bytes).ok())
+    }
+
+    /// Writes a persisted plugin preference value.
+    pub fn set_plugin_preference(
+        &self,
+        plugin_id: &str,
+        name: &str,
+        value: &str,
+        now_epoch: i64,
+    ) -> Result<()> {
+        let ns = format!("__pref__:{plugin_id}");
+        self.plugin_storage_set(&ns, name, value.as_bytes(), now_epoch)
+    }
+
+    /// Reads a TTL cache entry for `plugin_id`, automatically expiring entries past `now_epoch`.
+    pub fn plugin_cache_get(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        now_epoch: i64,
+    ) -> Result<Option<Vec<u8>>> {
+        let ns = format!("__cache__:{plugin_id}");
+        let Some(blob) = self.plugin_storage_get(&ns, key)? else {
+            return Ok(None);
+        };
+        if blob.len() < 8 {
+            return Ok(None);
+        }
+        let mut ts_bytes = [0u8; 8];
+        ts_bytes.copy_from_slice(&blob[0..8]);
+        let expires_at = i64::from_be_bytes(ts_bytes);
+        if expires_at > 0 && now_epoch >= expires_at {
+            let _ = self.plugin_storage_remove(&ns, key);
+            return Ok(None);
+        }
+        Ok(Some(blob[8..].to_vec()))
+    }
+
+    /// Stores a TTL cache entry for `plugin_id` (`ttl_seconds == 0` means no expiry).
+    pub fn plugin_cache_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: &[u8],
+        ttl_seconds: u64,
+        now_epoch: i64,
+    ) -> Result<()> {
+        let ns = format!("__cache__:{plugin_id}");
+        let expires_at = if ttl_seconds == 0 {
+            0
+        } else {
+            now_epoch.saturating_add(i64::try_from(ttl_seconds).unwrap_or(i64::MAX))
+        };
+        let mut blob = Vec::with_capacity(8 + value.len());
+        blob.extend_from_slice(&expires_at.to_be_bytes());
+        blob.extend_from_slice(value);
+        self.plugin_storage_set(&ns, key, &blob, now_epoch)
+    }
+
+    /// Local fallback secret storage scoped per plugin ID (used when Secret Service D-Bus is unavailable).
+    pub fn plugin_secret_get(&self, plugin_id: &str, key: &str) -> Result<Option<String>> {
+        let ns = format!("__secret__:{plugin_id}");
+        let Some(bytes) = self.plugin_storage_get(&ns, key)? else {
+            return Ok(None);
+        };
+        Ok(String::from_utf8(bytes).ok())
+    }
+
+    /// Writes a local plugin secret scoped per plugin ID.
+    pub fn plugin_secret_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        val: &str,
+        now_epoch: i64,
+    ) -> Result<()> {
+        let ns = format!("__secret__:{plugin_id}");
+        self.plugin_storage_set(&ns, key, val.as_bytes(), now_epoch)
+    }
 }
 
 #[cfg(test)]

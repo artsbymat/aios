@@ -45,6 +45,8 @@ interface host-api {
     secret-get: func(key: string) -> result<option<string>, string>;
     secret-set: func(key: string, val: string) -> result<_, string>;
     http-request: func(req: http-request-spec) -> result<http-response, string>;
+    fs-read-text: func(path: string) -> result<string, string>;
+    open-url: func(url: string) -> result<_, string>;
 }
 
 interface lifecycle {

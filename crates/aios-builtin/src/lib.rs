@@ -16,7 +16,9 @@ pub use desktop::{
     resolve_terminal_emulator, scan_desktop_applications, scan_desktop_applications_in,
 };
 pub use icons::IconResolver;
-pub use root_search::{RootActionOutcome, RootEntry, RootEntryKind, RootSearchOrchestrator};
+pub use root_search::{
+    ExternalRootEntry, RootActionOutcome, RootEntry, RootEntryKind, RootSearchOrchestrator,
+};
 
 /// Trait implemented by minimal in-process core plugins.
 pub trait BuiltinPlugin: Send + Sync {

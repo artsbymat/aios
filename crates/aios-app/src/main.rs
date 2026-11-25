@@ -1,6 +1,13 @@
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
 use aios_core::{AiosConfig, AiosPaths, Database, LogFormat, LogOptions, ThemeMode, init_logging};
 use aios_daemon::{DaemonIpcCommand, DaemonIpcResponse};
-use aios_ui::{palette_for, run_daemon_app, run_preview_app};
+use aios_plugin_host::{
+    PluginHost, WasmExecutionLimits, discover_plugins, discover_script_commands,
+    install_plugin_from_dir, uninstall_plugin,
+};
+use aios_ui::{palette_for, run_daemon_app, run_dev_plugin_app, run_preview_app};
 use aios_wayland::{IpcClient, detect_compositor, read_system_color_scheme};
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -62,10 +69,35 @@ enum Command {
     Show,
     /// Hide the main AIOS launcher overlay via the running daemon.
     Hide,
-    /// Open an AIOS deep link URI (e.g. aios://demo/grid).
+    /// Open an AIOS deep link URI (e.g. aios://settings, aios://demo/grid).
     Open { uri: String },
     /// Query live status from the running AIOS daemon.
     Status,
+    /// Manage external WASM plugins and local plugin development (`aios plugin ...`).
+    Plugin {
+        #[command(subcommand)]
+        action: PluginCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PluginCommand {
+    /// List installed external WASM plugins and discovered Script Commands.
+    List,
+    /// Validate and install a local WASM plugin bundle directory (`aios-plugin.toml` + `.wasm`).
+    Install { path: PathBuf },
+    /// Uninstall an external WASM plugin by ID and purge its local state.
+    Uninstall { plugin_id: String },
+    /// Run a live hot-reloading preview window bound to a local plugin directory.
+    Dev {
+        path: PathBuf,
+        /// Optional command ID inside `aios-plugin.toml` to launch immediately.
+        #[arg(long)]
+        command: Option<String>,
+        /// Optional theme override for the dev preview session.
+        #[arg(long, value_enum)]
+        theme: Option<CliTheme>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -99,6 +131,102 @@ fn main() -> Result<()> {
         Command::Hide => dispatch_ipc(DaemonIpcCommand::Hide),
         Command::Open { uri } => dispatch_ipc(DaemonIpcCommand::Open { uri }),
         Command::Status => dispatch_ipc(DaemonIpcCommand::Status),
+        Command::Plugin { action } => run_plugin_cli(action),
+    }
+}
+
+fn run_plugin_cli(action: PluginCommand) -> Result<()> {
+    let paths = AiosPaths::discover()?;
+    paths.ensure_dirs()?;
+    let config = AiosConfig::load_or_default(&paths)?;
+
+    match action {
+        PluginCommand::List => {
+            let plugins = discover_plugins(&paths.plugins_dir());
+            let scripts = discover_script_commands(&paths.scripts_dir());
+            println!("Installed WASM Plugins ({}):", plugins.len());
+            if plugins.is_empty() {
+                println!("  (none in {})", paths.plugins_dir().display());
+            } else {
+                for p in &plugins {
+                    println!(
+                        "  - {} v{} [{}] ({} command(s))",
+                        p.manifest.name,
+                        p.manifest.version,
+                        p.manifest.id,
+                        p.manifest.commands.len()
+                    );
+                }
+            }
+            println!("Script Commands ({}):", scripts.len());
+            if scripts.is_empty() {
+                println!("  (none in {})", paths.scripts_dir().display());
+            } else {
+                for s in &scripts {
+                    println!(
+                        "  - {} [{}] mode={} ({})",
+                        s.title,
+                        s.id,
+                        s.mode.label(),
+                        s.path.display()
+                    );
+                }
+            }
+            Ok(())
+        }
+        PluginCommand::Install { path } => {
+            let installed = install_plugin_from_dir(&path, &paths.plugins_dir())?;
+            println!(
+                "Installed WASM plugin '{}' ({}) v{} -> {}",
+                installed.manifest.name,
+                installed.manifest.id,
+                installed.manifest.version,
+                installed.root_dir.display()
+            );
+            let caps = installed.manifest.capabilities.declared_keys();
+            if !caps.is_empty() {
+                println!(
+                    "Declared capabilities (denied until approved in Settings & Extensions): {}",
+                    caps.join(", ")
+                );
+            }
+            Ok(())
+        }
+        PluginCommand::Uninstall { plugin_id } => {
+            let db = Database::open(&paths.database_file())?;
+            let removed = uninstall_plugin(&plugin_id, &paths.plugins_dir(), Some(&db))?;
+            if removed {
+                println!("Uninstalled plugin '{plugin_id}' and purged local plugin state.");
+            } else {
+                println!("Plugin '{plugin_id}' was not installed.");
+            }
+            Ok(())
+        }
+        PluginCommand::Dev {
+            path,
+            command,
+            theme,
+        } => {
+            // Validate bundle upfront so CLI gives an immediate error on invalid paths.
+            let db = Arc::new(Mutex::new(Database::open(&paths.database_file())?));
+            let mut probe = PluginHost::new(
+                config.clone(),
+                paths.clone(),
+                db,
+                WasmExecutionLimits::default(),
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+            let bundle = probe
+                .attach_dev_plugin(&path)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            tracing::info!(
+                plugin_id = %bundle.manifest.id,
+                dir = %path.display(),
+                "starting AIOS plugin dev session with hot-reload"
+            );
+            run_dev_plugin_app(config, paths, path, command, theme.map(ThemeMode::from));
+            Ok(())
+        }
     }
 }
 
@@ -117,6 +245,8 @@ fn run_doctor() -> Result<()> {
         .iter()
         .filter(|a| a.icon_path.is_some())
         .count();
+    let wasm_plugins = discover_plugins(&paths.plugins_dir());
+    let script_cmds = discover_script_commands(&paths.scripts_dir());
 
     tracing::info!(
         compositor = ?compositor,
@@ -151,6 +281,16 @@ fn run_doctor() -> Result<()> {
         "  desktop_apps  : {} indexed ({} with resolved icons)",
         discovered_apps.len(),
         apps_with_icons
+    );
+    println!(
+        "  wasm_plugins  : {} installed ({})",
+        wasm_plugins.len(),
+        paths.plugins_dir().display()
+    );
+    println!(
+        "  script_cmds   : {} discovered ({})",
+        script_cmds.len(),
+        paths.scripts_dir().display()
     );
     Ok(())
 }

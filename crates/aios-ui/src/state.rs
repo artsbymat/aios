@@ -55,6 +55,8 @@ pub struct NavFrame {
     pub header_focus: HeaderFocus,
     pub selected_index: usize,
     pub focused_form_field: usize,
+    /// Optional `(plugin_id, command_id)` owning this view frame for interactive WASM events.
+    pub plugin_session: Option<(String, String)>,
 }
 
 impl NavFrame {
@@ -73,6 +75,41 @@ impl NavFrame {
             header_focus: HeaderFocus::Search,
             selected_index: 0,
             focused_form_field,
+            plugin_session: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_plugin_session(
+        mut self,
+        plugin_id: impl Into<String>,
+        command_id: impl Into<String>,
+    ) -> Self {
+        self.plugin_session = Some((plugin_id.into(), command_id.into()));
+        self
+    }
+
+    /// Returns the ID of the currently selected list row or grid tile, if any.
+    #[must_use]
+    pub fn selected_item_id(&self) -> Option<String> {
+        match &self.view {
+            ViewNode::List(list) => {
+                let entries = self.filtered_list_entries();
+                entries.get(self.selected_index).map(|entry| {
+                    list.sections[entry.section_index].items[entry.item_index]
+                        .id
+                        .clone()
+                })
+            }
+            ViewNode::Grid(grid) => {
+                let entries = self.filtered_grid_entries();
+                entries.get(self.selected_index).map(|entry| {
+                    grid.sections[entry.section_index].items[entry.item_index]
+                        .id
+                        .clone()
+                })
+            }
+            _ => None,
         }
     }
 

@@ -1,0 +1,31 @@
+[plugin]
+id = "com.aios.quick-notes"
+name = "Quick Notes"
+version = "0.1.0"
+description = "Reference List+Detail external WASM plugin with LocalStorage and clipboard capability gating."
+author = "AIOS"
+min_aios_version = "0.1.0"
+entry = "plugin.wasm"
+
+[capabilities]
+clipboard_write = true
+clipboard_read = false
+http_hosts = []
+fs_read = []
+secrets = false
+
+[[preferences]]
+name = "default_folder"
+title = "Default Folder"
+description = "Default tag applied to new quick notes"
+kind = "textfield"
+default = "inbox"
+required = false
+
+[[commands]]
+id = "browse"
+title = "Browse Quick Notes"
+subtitle = "Quick Notes (WASM List+Detail)"
+mode = "view"
+default_view = "list"
+keywords = ["notes", "markdown", "list", "detail", "wasm"]

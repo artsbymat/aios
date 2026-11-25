@@ -9,6 +9,8 @@ aios-builtin = { workspace = true }
 aios-core = { workspace = true }
 aios-daemon = { workspace = true }
 aios-fuzzy = { workspace = true }
+aios-plugin-host = { workspace = true }
+aios-plugin-sdk = { workspace = true }
 aios-wayland = { workspace = true }
 anyhow = { workspace = true }
 async-channel = { workspace = true }

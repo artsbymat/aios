@@ -2,14 +2,25 @@
 //! event loop, live XDG portal theme updates, and standalone preview runner.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use aios_builtin::{RootActionOutcome, RootSearchOrchestrator};
-use aios_core::config::{AiosConfig, ThemeMode};
+use aios_builtin::{
+    ExternalRootEntry, RootActionOutcome, RootSearchOrchestrator, open_url_detached,
+};
+use aios_core::config::{AiosConfig, ResolvedTheme, ThemeMode};
 use aios_core::paths::AiosPaths;
 use aios_core::storage::Database;
-use aios_core::view::{FilterDropdown, ToastStyle, ViewNode};
+use aios_core::view::{FilterDropdown, FilterMode, ToastStyle, ViewNode};
 use aios_daemon::{DaemonIpcCommand, DaemonIpcResponse, DaemonStatus};
+use aios_plugin_host::{
+    DevReloadEvent, HostActionResult, HostSideEffect, PluginDevWatcher, PluginHost,
+    WasmExecutionLimits,
+};
+use aios_plugin_sdk::{PluginEvent, PluginResponse};
 use aios_wayland::{IpcServer, PortalThemeWatcher, detect_compositor};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, FocusHandle, Focusable, FontWeight,
@@ -36,10 +47,11 @@ use crate::views::{
 };
 
 /// Main GPUI entity owning the active launcher `NavStack`, Root Search orchestrator,
-/// keyboard focus, scroll handles, and overlays.
+/// hybrid PluginHost (WASM + Script Commands), keyboard focus, scroll handles, and overlays.
 pub struct LauncherWindow {
     pub state: LauncherState,
     pub root_search: Rc<RefCell<RootSearchOrchestrator>>,
+    pub plugin_host: Rc<RefCell<PluginHost>>,
     pub focus_handle: FocusHandle,
     pub list_scroll: ScrollHandle,
     pub grid_scroll: ScrollHandle,
@@ -65,6 +77,7 @@ impl Focusable for LauncherWindow {
 impl LauncherWindow {
     pub fn new(
         root_search: Rc<RefCell<RootSearchOrchestrator>>,
+        plugin_host: Rc<RefCell<PluginHost>>,
         initial_uri: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -72,25 +85,28 @@ impl LauncherWindow {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
+        sync_plugins_to_root_search(&root_search, &plugin_host);
         let initial_root_view = root_search.borrow_mut().build_root_view("", "all");
-        let mut state = LauncherState::new(crate::state::NavFrame::new(
+        let state = LauncherState::new(crate::state::NavFrame::new(
             "root.search",
             initial_root_view,
         ));
-        if let Some(uri) = initial_uri {
-            open_deep_link(&mut state, uri);
-        }
 
-        Self {
+        let mut this = Self {
             state,
             root_search,
+            plugin_host,
             focus_handle,
             list_scroll: ScrollHandle::new(),
             grid_scroll: ScrollHandle::new(),
             form_scroll: ScrollHandle::new(),
             action_panel_scroll: ScrollHandle::new(),
             sync_scroll: Cell::new(true),
+        };
+        if let Some(uri) = initial_uri {
+            this.open_uri(uri, cx);
         }
+        this
     }
 
     /// Re-runs Root Search orchestrator when the active frame is `root.search`.
@@ -126,10 +142,215 @@ impl LauncherWindow {
     }
 
     pub fn open_uri(&mut self, uri: &str, cx: &mut Context<Self>) {
+        let normalized = uri.trim().trim_start_matches("aios://");
+        if normalized == "settings" || normalized == "extensions" {
+            self.state.pop_to_root();
+            let view = self.plugin_host.borrow().build_settings_view();
+            self.state
+                .push(crate::state::NavFrame::new("settings.home", view));
+            self.request_scroll_sync();
+            cx.notify();
+            return;
+        }
         open_deep_link(&mut self.state, uri);
         self.refresh_root_search();
         self.request_scroll_sync();
         cx.notify();
+    }
+
+    /// Launches a WASM plugin command directly (used by `aios plugin dev` hot-reload).
+    pub fn launch_plugin_command(
+        &mut self,
+        plugin_id: &str,
+        command_id: &str,
+        replace_top: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let theme_mode = active_theme_name(cx);
+        let result = self
+            .plugin_host
+            .borrow_mut()
+            .run_wasm_command(plugin_id, command_id, "[]", theme_mode);
+        if replace_top && self.state.depth() > 1 {
+            self.state.pop();
+        }
+        self.apply_host_action_result(result, window, cx);
+        cx.notify();
+    }
+
+    fn dispatch_plugin_search_if_needed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((plugin_id, command_id)) = self.state.current().plugin_session.clone() else {
+            return;
+        };
+        let is_plugin_filtering = matches!(
+            &self.state.current().view,
+            ViewNode::List(l) if l.filtering == FilterMode::Plugin
+        ) || matches!(
+            &self.state.current().view,
+            ViewNode::Grid(g) if g.filtering == FilterMode::Plugin
+        );
+        if !is_plugin_filtering {
+            return;
+        }
+        let query = self.state.current().search_query.clone();
+        let event = PluginEvent::SearchTextChanged {
+            command_id: command_id.clone(),
+            query,
+        };
+        let theme_mode = active_theme_name(cx);
+        let res = self.plugin_host.borrow_mut().send_wasm_event(
+            &plugin_id,
+            &command_id,
+            &event,
+            theme_mode,
+        );
+        self.apply_host_action_result(res, window, cx);
+    }
+
+    fn dispatch_plugin_dropdown_if_needed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((plugin_id, command_id)) = self.state.current().plugin_session.clone() else {
+            return;
+        };
+        let selected_id = match &self.state.current().view {
+            ViewNode::List(l) => l.filter_dropdown.as_ref().map(|d| d.selected_id.clone()),
+            ViewNode::Grid(g) => g.filter_dropdown.as_ref().map(|d| d.selected_id.clone()),
+            _ => None,
+        };
+        let Some(selected_id) = selected_id else {
+            return;
+        };
+        let event = PluginEvent::DropdownChanged {
+            command_id: command_id.clone(),
+            selected_id,
+        };
+        let theme_mode = active_theme_name(cx);
+        let res = self.plugin_host.borrow_mut().send_wasm_event(
+            &plugin_id,
+            &command_id,
+            &event,
+            theme_mode,
+        );
+        self.apply_host_action_result(res, window, cx);
+    }
+
+    fn apply_host_action_result(
+        &mut self,
+        result: HostActionResult,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut should_close = false;
+        for effect in result.side_effects {
+            match effect {
+                HostSideEffect::ShowToast(toast) => {
+                    self.state
+                        .show_toast(toast.style, toast.title, toast.message);
+                }
+                HostSideEffect::ShowHud(hud) => {
+                    show_hud_pill(hud.title, cx);
+                }
+                HostSideEffect::CloseMainWindow => {
+                    should_close = true;
+                }
+                HostSideEffect::PopToRoot => {
+                    self.state.pop_to_root();
+                    self.refresh_root_search();
+                }
+                HostSideEffect::ClipboardWrite(text) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+                HostSideEffect::OpenUrl(url) => {
+                    let _ = open_url_detached(&url);
+                }
+            }
+        }
+
+        match result.response {
+            PluginResponse::Render { view } => {
+                let frame = self.state.current_mut();
+                frame.view = *view;
+                if let Some(session) = result.active_plugin_session {
+                    frame.plugin_session = Some(session);
+                }
+                frame.clamp_selection();
+                self.request_scroll_sync();
+            }
+            PluginResponse::Push { frame_id, view } => {
+                let mut frame = crate::state::NavFrame::new(
+                    frame_id.unwrap_or_else(|| "plugin.view".to_string()),
+                    *view,
+                );
+                if let Some((pid, cid)) = result.active_plugin_session {
+                    frame = frame.with_plugin_session(pid, cid);
+                }
+                self.state.push(frame);
+                self.request_scroll_sync();
+            }
+            PluginResponse::Pop => {
+                self.state.pop();
+                if self.state.current().id == "settings.home" {
+                    let refreshed = self.plugin_host.borrow().build_settings_view();
+                    self.state.current_mut().view = refreshed;
+                    self.state.current_mut().clamp_selection();
+                }
+                self.refresh_root_search();
+                self.request_scroll_sync();
+            }
+            PluginResponse::PopToRoot => {
+                self.state.pop_to_root();
+                self.refresh_root_search();
+                self.request_scroll_sync();
+            }
+            PluginResponse::CloseWindow { hud } => {
+                if let Some(h) = hud {
+                    show_hud_pill(h.title, cx);
+                }
+                should_close = true;
+            }
+            PluginResponse::ShowToast { toast } => {
+                self.state
+                    .show_toast(toast.style, toast.title, toast.message);
+            }
+            PluginResponse::ShowHud { hud } => {
+                show_hud_pill(hud.title, cx);
+            }
+            PluginResponse::Confirm { alert } => {
+                self.state.open_confirm_alert(alert);
+            }
+            PluginResponse::CopyToClipboard { text, hud_title } => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                let title = hud_title.unwrap_or_else(|| "Copied to Clipboard".to_string());
+                self.state
+                    .show_toast(ToastStyle::Success, title.clone(), None);
+                show_hud_pill(title, cx);
+            }
+            PluginResponse::OpenUrl { url } => match open_url_detached(&url) {
+                Ok(()) => {
+                    show_hud_pill("Opened URL".to_string(), cx);
+                    should_close = true;
+                }
+                Err(err) => {
+                    self.state.show_toast(
+                        ToastStyle::Failure,
+                        "Failed to open URL",
+                        Some(err.to_string()),
+                    );
+                }
+            },
+            PluginResponse::MenuBar { state } => {
+                self.state.show_toast(
+                    ToastStyle::Success,
+                    format!("MenuBar updated: {}", state.title),
+                    state.tooltip,
+                );
+            }
+            PluginResponse::Noop => {}
+        }
+
+        if should_close {
+            window.remove_window();
+        }
     }
 
     pub fn trigger_primary_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -157,9 +378,113 @@ impl LauncherWindow {
     }
 
     pub fn execute_action(&mut self, action_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let was_confirm_alert = matches!(self.state.overlay, Some(ActiveOverlay::ConfirmAlert(_)));
         self.state.overlay = None;
 
-        // Handle Root Search & Application Launcher actions first.
+        // 1. Handle Hybrid Plugin Host (WASM, Script Commands, Settings & Extension Manager).
+        let is_plugin_host_action = action_id.starts_with("plugin.")
+            || action_id.starts_with("script.")
+            || action_id.starts_with("settings.")
+            || action_id == "core.open-settings";
+
+        if is_plugin_host_action {
+            let needs_form_values = action_id == "settings.install-plugin-submit"
+                || action_id.starts_with("settings.plugin-prefs-save:");
+            let form_values: Option<BTreeMap<String, String>> = if needs_form_values {
+                match self.state.validate_active_form() {
+                    Ok(pairs) => Some(pairs.into_iter().collect()),
+                    Err(err_count) => {
+                        self.state.show_toast(
+                            ToastStyle::Failure,
+                            format!("{err_count} validation error(s)"),
+                            Some("Fix the highlighted form fields and try again.".to_string()),
+                        );
+                        cx.notify();
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+
+            let inline_args = self.state.current().inline_arg_values.clone();
+            let theme_mode = active_theme_name(cx);
+            let maybe_result = self.plugin_host.borrow_mut().dispatch_host_action(
+                action_id,
+                &inline_args,
+                form_values.as_ref(),
+                theme_mode,
+            );
+            if let Some(result) = maybe_result {
+                let mutates_registry = action_id == "settings.reload-all"
+                    || action_id == "settings.install-plugin-submit"
+                    || action_id.starts_with("settings.plugin-uninstall-confirm:")
+                    || action_id.starts_with("plugin.reload:");
+                if mutates_registry {
+                    sync_plugins_to_root_search(&self.root_search, &self.plugin_host);
+                }
+                self.apply_host_action_result(result, window, cx);
+                cx.notify();
+                return;
+            }
+        }
+
+        // 2. Route interactive actions inside an active WASM plugin frame back into the WASM sandbox.
+        let is_shell_builtin = matches!(
+            action_id,
+            "nav.pop"
+                | "search.clear"
+                | "theme.cycle"
+                | "theme.dark"
+                | "theme.light"
+                | "theme.system"
+        );
+        if !is_shell_builtin
+            && let Some((plugin_id, command_id)) = self.state.current().plugin_session.clone()
+        {
+            let theme_mode = active_theme_name(cx);
+            let event = if was_confirm_alert {
+                PluginEvent::ConfirmAccepted {
+                    command_id: command_id.clone(),
+                    alert_id: action_id.to_owned(),
+                }
+            } else if matches!(self.state.current().view, ViewNode::Form(_)) {
+                match self.state.validate_active_form() {
+                    Ok(pairs) => PluginEvent::FormSubmitted {
+                        command_id: command_id.clone(),
+                        action_id: action_id.to_owned(),
+                        values: pairs.into_iter().collect(),
+                    },
+                    Err(err_count) => {
+                        self.state.show_toast(
+                            ToastStyle::Failure,
+                            format!("{err_count} validation error(s)"),
+                            Some("Fill required fields highlighted below.".to_string()),
+                        );
+                        cx.notify();
+                        return;
+                    }
+                }
+            } else {
+                PluginEvent::ActionTriggered {
+                    command_id: command_id.clone(),
+                    action_id: action_id.to_owned(),
+                    item_id: self.state.current().selected_item_id(),
+                    inline_args: self.state.current().inline_arg_values.clone(),
+                }
+            };
+            let result = self.plugin_host.borrow_mut().send_wasm_event(
+                &plugin_id,
+                &command_id,
+                &event,
+                theme_mode,
+            );
+            self.apply_host_action_result(result, window, cx);
+            cx.notify();
+            return;
+        }
+
+        // 3. Handle Root Search & Application Launcher actions.
         let is_root_action = action_id.starts_with("app.")
             || action_id.starts_with("root.")
             || action_id.starts_with("core.")
@@ -348,6 +673,7 @@ impl LauncherWindow {
         if key == "backspace" {
             self.state.handle_backspace();
             self.refresh_root_search();
+            self.dispatch_plugin_search_if_needed(window, cx);
             self.request_scroll_sync();
             cx.notify();
             return;
@@ -371,6 +697,7 @@ impl LauncherWindow {
         {
             self.state.insert_text(ch);
             self.refresh_root_search();
+            self.dispatch_plugin_search_if_needed(window, cx);
             self.request_scroll_sync();
             cx.notify();
         }
@@ -386,6 +713,7 @@ impl LauncherWindow {
                 ActiveOverlay::FilterDropdown { selected_index } => {
                     self.state.apply_filter_option(selected_index);
                     self.refresh_root_search();
+                    self.dispatch_plugin_dropdown_if_needed(window, cx);
                     self.request_scroll_sync();
                     cx.notify();
                     return;
@@ -1197,9 +1525,42 @@ impl Render for LauncherWindow {
     }
 }
 
+fn active_theme_name(cx: &App) -> &'static str {
+    match cx.global::<AiosTheme>().resolved {
+        ResolvedTheme::Dark => "dark",
+        ResolvedTheme::Light => "light",
+    }
+}
+
+fn sync_plugins_to_root_search(
+    root_search: &Rc<RefCell<RootSearchOrchestrator>>,
+    plugin_host: &Rc<RefCell<PluginHost>>,
+) {
+    let entries: Vec<ExternalRootEntry> = plugin_host
+        .borrow()
+        .root_search_entries()
+        .into_iter()
+        .map(|entry| ExternalRootEntry {
+            id: entry.id,
+            title: entry.title,
+            subtitle: entry.subtitle,
+            badge: entry.badge,
+            icon_path: entry.icon_path,
+            keywords: entry.keywords,
+            filter_group: entry.filter_group,
+            action_id: entry.action_id,
+            secondary_action_id: entry.secondary_action_id,
+            tag_label: entry.tag_label,
+            inline_summary: entry.inline_summary,
+        })
+        .collect();
+    root_search.borrow_mut().set_external_entries(entries);
+}
+
 fn open_launcher_window(
     config: &AiosConfig,
     root_search: Rc<RefCell<RootSearchOrchestrator>>,
+    plugin_host: Rc<RefCell<PluginHost>>,
     initial_uri: Option<&str>,
     cx: &mut App,
 ) -> anyhow::Result<WindowHandle<LauncherWindow>> {
@@ -1232,10 +1593,14 @@ fn open_launcher_window(
     let uri_fallback = uri_owned.clone();
     let rs_primary = Rc::clone(&root_search);
     let rs_fallback = root_search;
+    let ph_primary = Rc::clone(&plugin_host);
+    let ph_fallback = plugin_host;
 
     let handle = cx
         .open_window(layer_opts, move |window, cx| {
-            cx.new(|cx| LauncherWindow::new(rs_primary, uri_owned.as_deref(), window, cx))
+            cx.new(|cx| {
+                LauncherWindow::new(rs_primary, ph_primary, uri_owned.as_deref(), window, cx)
+            })
         })
         .or_else(|err| {
             tracing::warn!(
@@ -1249,26 +1614,46 @@ fn open_launcher_window(
                 .kind(WindowKind::PopUp)
                 .linux_window_background(LinuxWindowBackground::Transparent);
             cx.open_window(fallback_opts, move |window, cx| {
-                cx.new(|cx| LauncherWindow::new(rs_fallback, uri_fallback.as_deref(), window, cx))
+                cx.new(|cx| {
+                    LauncherWindow::new(
+                        rs_fallback,
+                        ph_fallback,
+                        uri_fallback.as_deref(),
+                        window,
+                        cx,
+                    )
+                })
             })
         })?;
 
     Ok(handle)
 }
 
-fn open_orchestrator(config: &AiosConfig, paths: &AiosPaths) -> RootSearchOrchestrator {
+fn open_runtime_hosts(
+    config: &AiosConfig,
+    paths: &AiosPaths,
+) -> (RootSearchOrchestrator, PluginHost) {
     let db = match Database::open(&paths.database_file()) {
-        Ok(db) => Some(db),
+        Ok(db) => db,
         Err(err) => {
             tracing::warn!(
                 error = %err,
                 path = %paths.database_file().display(),
-                "SQLite unavailable; using in-memory frecency database for this session"
+                "SQLite unavailable; using in-memory database for this session"
             );
-            Database::open_in_memory().ok()
+            Database::open_in_memory().expect("in-memory sqlite must succeed")
         }
     };
-    RootSearchOrchestrator::new(config.clone(), db)
+    let shared_db = Arc::new(Mutex::new(db));
+    let orchestrator = RootSearchOrchestrator::new_shared(config.clone(), Arc::clone(&shared_db));
+    let plugin_host = PluginHost::new(
+        config.clone(),
+        paths.clone(),
+        shared_db,
+        WasmExecutionLimits::default(),
+    )
+    .expect("failed to initialize AIOS Wasmtime plugin runtime");
+    (orchestrator, plugin_host)
 }
 
 /// Runs the persistent single-instance AIOS daemon with Unix socket IPC + live XDG portal theme watcher.
@@ -1280,13 +1665,15 @@ pub fn run_daemon_app(
     let (_ipc_server, ipc_rx) = IpcServer::bind(&paths.runtime_socket)?;
     let (_portal_watcher, initial_scheme, portal_rx) = PortalThemeWatcher::spawn();
     let compositor = detect_compositor();
-    let orchestrator = open_orchestrator(&config, &paths);
+    let (orchestrator, plugin_host) = open_runtime_hosts(&config, &paths);
 
     tracing::info!(
         socket = %paths.runtime_socket.display(),
         ?compositor,
         ?initial_scheme,
         indexed_apps = orchestrator.visible_app_count(),
+        wasm_plugins = plugin_host.plugins().len(),
+        script_commands = plugin_host.scripts().len(),
         "starting AIOS GPUI daemon"
     );
 
@@ -1306,11 +1693,18 @@ pub fn run_daemon_app(
             ));
 
             let root_search = Rc::new(RefCell::new(orchestrator));
+            let plugin_host = Rc::new(RefCell::new(plugin_host));
             let active_window: Rc<RefCell<Option<WindowHandle<LauncherWindow>>>> =
                 Rc::new(RefCell::new(None));
 
             if show_immediately
-                && let Ok(handle) = open_launcher_window(&config, Rc::clone(&root_search), None, cx)
+                && let Ok(handle) = open_launcher_window(
+                    &config,
+                    Rc::clone(&root_search),
+                    Rc::clone(&plugin_host),
+                    None,
+                    cx,
+                )
             {
                 *active_window.borrow_mut() = Some(handle);
             }
@@ -1334,6 +1728,7 @@ pub fn run_daemon_app(
             let cfg_for_ipc = config.clone();
             let win_for_ipc = Rc::clone(&active_window);
             let rs_for_ipc = Rc::clone(&root_search);
+            let ph_for_ipc = Rc::clone(&plugin_host);
             cx.spawn(async move |cx| {
                 let _hold = _keep_alive;
                 while let Ok(envelope) = ipc_rx.recv().await {
@@ -1356,6 +1751,7 @@ pub fn run_daemon_app(
                                     match open_launcher_window(
                                         &cfg_for_ipc,
                                         Rc::clone(&rs_for_ipc),
+                                        Rc::clone(&ph_for_ipc),
                                         None,
                                         cx,
                                     ) {
@@ -1376,6 +1772,7 @@ pub fn run_daemon_app(
                                 } else if let Ok(h) = open_launcher_window(
                                     &cfg_for_ipc,
                                     Rc::clone(&rs_for_ipc),
+                                    Rc::clone(&ph_for_ipc),
                                     None,
                                     cx,
                                 ) {
@@ -1398,6 +1795,7 @@ pub fn run_daemon_app(
                                     match open_launcher_window(
                                         &cfg_for_ipc,
                                         Rc::clone(&rs_for_ipc),
+                                        Rc::clone(&ph_for_ipc),
                                         Some(uri),
                                         cx,
                                     ) {
@@ -1447,7 +1845,7 @@ pub fn run_preview_app(
         config.theme.mode = mode;
     }
     let (_portal_watcher, initial_scheme, portal_rx) = PortalThemeWatcher::spawn();
-    let orchestrator = open_orchestrator(&config, &paths);
+    let (orchestrator, plugin_host) = open_runtime_hosts(&config, &paths);
 
     gpui_platform::application()
         .with_assets(crate::fonts::AiosAssetSource)
@@ -1463,8 +1861,15 @@ pub fn run_preview_app(
             ));
 
             let root_search = Rc::new(RefCell::new(orchestrator));
-            let handle = open_launcher_window(&config, root_search, initial_uri.as_deref(), cx)
-                .expect("failed to open AIOS preview window");
+            let plugin_host = Rc::new(RefCell::new(plugin_host));
+            let handle = open_launcher_window(
+                &config,
+                root_search,
+                plugin_host,
+                initial_uri.as_deref(),
+                cx,
+            )
+            .expect("failed to open AIOS preview window");
 
             cx.spawn(async move |cx| {
                 let _hold = _keep_portal;
@@ -1473,6 +1878,136 @@ pub fn run_preview_app(
                         cx.global_mut::<AiosTheme>()
                             .set_system_prefers_dark(scheme.prefers_dark());
                         let _ = handle.update(cx, |_, _, cx| cx.notify());
+                    });
+                }
+            })
+            .detach();
+        });
+}
+
+/// Runs a live hot-reloading preview window bound to a local plugin directory (`aios plugin dev <path>`).
+pub fn run_dev_plugin_app(
+    mut config: AiosConfig,
+    paths: AiosPaths,
+    dev_dir: PathBuf,
+    command_id: Option<String>,
+    theme_override: Option<ThemeMode>,
+) {
+    if let Some(mode) = theme_override {
+        config.theme.mode = mode;
+    }
+    let (_portal_watcher, initial_scheme, portal_rx) = PortalThemeWatcher::spawn();
+    let (orchestrator, mut plugin_host) = open_runtime_hosts(&config, &paths);
+    let initial_bundle = plugin_host
+        .attach_dev_plugin(&dev_dir)
+        .expect("dev plugin directory must contain valid aios-plugin.toml and .wasm");
+    let target_plugin_id = initial_bundle.manifest.id.clone();
+    let target_cmd_id = command_id.unwrap_or_else(|| {
+        initial_bundle
+            .manifest
+            .commands
+            .first()
+            .map(|c| c.id.clone())
+            .unwrap_or_default()
+    });
+
+    let (reload_tx, reload_rx) = async_channel::unbounded::<DevReloadEvent>();
+    let watch_dir = dev_dir.clone();
+    std::thread::Builder::new()
+        .name("aios-plugin-dev-watch".to_string())
+        .spawn(move || {
+            let mut watcher = PluginDevWatcher::new(&watch_dir, Duration::from_millis(350));
+            let _ = watcher.load_initial();
+            loop {
+                std::thread::sleep(watcher.poll_interval());
+                if let Some(ev) = watcher.poll_change()
+                    && reload_tx.send_blocking(ev).is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .ok();
+
+    gpui_platform::application()
+        .with_assets(crate::fonts::AiosAssetSource)
+        .with_quit_mode(QuitMode::LastWindowClosed)
+        .run(move |cx: &mut App| {
+            let _keep_portal = _portal_watcher;
+            crate::fonts::register_embedded_fonts(cx);
+            cx.set_global(AiosTheme::new(
+                config.theme.mode,
+                initial_scheme.prefers_dark(),
+                config.theme.translucent_root,
+                config.theme.reduced_motion,
+            ));
+
+            let root_search = Rc::new(RefCell::new(orchestrator));
+            let plugin_host = Rc::new(RefCell::new(plugin_host));
+            let handle =
+                open_launcher_window(&config, root_search, Rc::clone(&plugin_host), None, cx)
+                    .expect("failed to open AIOS plugin dev window");
+
+            let init_pid = target_plugin_id.clone();
+            let init_cid = target_cmd_id.clone();
+            let _ = handle.update(cx, |view, window, cx| {
+                view.launch_plugin_command(&init_pid, &init_cid, false, window, cx);
+            });
+
+            // Live XDG portal theme updates
+            cx.spawn(async move |cx| {
+                let _hold = _keep_portal;
+                while let Ok(scheme) = portal_rx.recv().await {
+                    cx.update(|cx| {
+                        cx.global_mut::<AiosTheme>()
+                            .set_system_prefers_dark(scheme.prefers_dark());
+                        let _ = handle.update(cx, |_, _, cx| cx.notify());
+                    });
+                }
+            })
+            .detach();
+
+            // Live hot-reload on `aios-plugin.toml` or `.wasm` change
+            let dev_dir_for_reload = dev_dir.clone();
+            cx.spawn(async move |cx| {
+                while let Ok(ev) = reload_rx.recv().await {
+                    cx.update(|cx| {
+                        let _ = handle.update(cx, |view, window, cx| match ev {
+                            DevReloadEvent::Reloaded(bundle) => {
+                                let _ = view
+                                    .plugin_host
+                                    .borrow_mut()
+                                    .attach_dev_plugin(&dev_dir_for_reload);
+                                sync_plugins_to_root_search(&view.root_search, &view.plugin_host);
+                                let cmd = bundle
+                                    .manifest
+                                    .commands
+                                    .iter()
+                                    .find(|c| c.id == target_cmd_id)
+                                    .or_else(|| bundle.manifest.commands.first())
+                                    .map(|c| c.id.clone())
+                                    .unwrap_or_else(|| target_cmd_id.clone());
+                                view.launch_plugin_command(
+                                    &bundle.manifest.id,
+                                    &cmd,
+                                    true,
+                                    window,
+                                    cx,
+                                );
+                                view.state.show_toast(
+                                    ToastStyle::Success,
+                                    format!("Hot-reloaded {}", bundle.manifest.name),
+                                    None,
+                                );
+                            }
+                            DevReloadEvent::InvalidBundle(err) => {
+                                view.state.show_toast(
+                                    ToastStyle::Failure,
+                                    "Plugin reload error",
+                                    Some(err),
+                                );
+                            }
+                        });
                     });
                 }
             })

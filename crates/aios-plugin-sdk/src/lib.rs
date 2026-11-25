@@ -1,29 +1,307 @@
-//! Ergonomic plugin SDK shared by built-in Rust plugins and WASM guests.
+//! Ergonomic plugin SDK shared by built-in Rust plugins, host manifest loaders, and WASM guests.
+
+pub mod builders;
+pub mod protocol;
 
 pub use aios_core::view::{
-    ActionItem, ActionPanel, CommandMode, ConfirmAlert, DetailView, EmptyView, FilterMode,
-    FormField, FormView, GridView, HudMessage, ListItem, ListSection, ListView, ToastMessage,
-    ToastStyle, ViewNode,
+    Accessory, ActionItem, ActionPanel, ActionSection, CommandMode, ConfirmAlert, DetailView,
+    EmptyView, ErrorView, FilterDropdown, FilterMode, FilterOption, FormField, FormView,
+    GridAspectRatio, GridItem, GridItemContent, GridSection, GridView, HudMessage,
+    InlineArgumentSpec, ItemDetail, ListItem, ListSection, ListView, MetadataEntry, SemanticTone,
+    ToastMessage, ToastStyle, ViewNode,
 };
+pub use builders::{
+    ActionPanelBuilder, DetailViewBuilder, FormViewBuilder, GridItemBuilder, GridViewBuilder,
+    ListItemBuilder, ListViewBuilder, error_view,
+};
+pub use protocol::{MenuBarItem, MenuBarState, PluginEvent, PluginResponse};
+
 use serde::{Deserialize, Serialize};
 
-/// Declarative manifest parsed from `aios-plugin.toml`.
+/// Top-level `aios-plugin.toml` manifest document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginManifestFile {
+    pub plugin: PluginMetadata,
+    #[serde(default)]
+    pub capabilities: PluginCapabilities,
+    #[serde(default)]
+    pub preferences: Vec<PreferenceSpec>,
+    #[serde(default)]
+    pub commands: Vec<CommandSpec>,
+}
+
+impl PluginManifestFile {
+    /// Parses and validates an `aios-plugin.toml` document.
+    pub fn from_toml_str(raw: &str) -> Result<Self, String> {
+        let parsed: Self =
+            toml::from_str(raw).map_err(|e| format!("invalid manifest TOML: {e}"))?;
+        parsed.validate()?;
+        Ok(parsed)
+    }
+
+    /// Validates required fields, plugin ID format, and command definitions.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.plugin.id.trim().is_empty() {
+            return Err("plugin.id must not be empty".to_string());
+        }
+        if !self
+            .plugin
+            .id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        {
+            return Err(format!(
+                "plugin.id '{}' contains invalid characters (allowed: a-z, A-Z, 0-9, ., -, _)",
+                self.plugin.id
+            ));
+        }
+        if self.plugin.name.trim().is_empty() {
+            return Err("plugin.name must not be empty".to_string());
+        }
+        if self.plugin.entry.trim().is_empty() {
+            return Err("plugin.entry must specify a .wasm component file".to_string());
+        }
+        if self.commands.is_empty() {
+            return Err("manifest must declare at least one [[commands]] entry".to_string());
+        }
+        for cmd in &self.commands {
+            if cmd.id.trim().is_empty() || cmd.title.trim().is_empty() {
+                return Err("every command must have a non-empty id and title".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// Converts this manifest file into the flattened [`PluginManifest`] representation.
+    #[must_use]
+    pub fn into_manifest(self) -> PluginManifest {
+        PluginManifest {
+            id: self.plugin.id,
+            name: self.plugin.name,
+            version: self.plugin.version,
+            description: self.plugin.description,
+            author: self.plugin.author,
+            min_aios_version: self.plugin.min_aios_version,
+            entry: self.plugin.entry,
+            icon: self.plugin.icon,
+            capabilities: self.capabilities,
+            preferences: self.preferences,
+            commands: self.commands,
+        }
+    }
+}
+
+/// `[plugin]` header inside `aios-plugin.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginMetadata {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub min_aios_version: Option<String>,
+    pub entry: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+/// `[capabilities]` section declaring every privileged resource the plugin may request.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginCapabilities {
+    pub clipboard_read: bool,
+    pub clipboard_write: bool,
+    pub http_hosts: Vec<String>,
+    pub fs_read: Vec<String>,
+    pub secrets: bool,
+}
+
+impl PluginCapabilities {
+    /// Returns the list of canonical capability keys declared by this manifest.
+    #[must_use]
+    pub fn declared_keys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        if self.clipboard_read {
+            keys.push("clipboard_read".to_string());
+        }
+        if self.clipboard_write {
+            keys.push("clipboard_write".to_string());
+        }
+        if self.secrets {
+            keys.push("secrets".to_string());
+        }
+        for host in &self.http_hosts {
+            keys.push(format!("http:{host}"));
+        }
+        for path in &self.fs_read {
+            keys.push(format!("fs_read:{path}"));
+        }
+        keys
+    }
+}
+
+/// Input control type for `[[preferences]]`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreferenceKind {
+    #[default]
+    Textfield,
+    Password,
+    Checkbox,
+    Dropdown,
+}
+
+/// User-configurable plugin setting declared in `[[preferences]]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreferenceSpec {
+    pub name: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub kind: PreferenceKind,
+    #[serde(default)]
+    pub default: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub options: Vec<FilterOption>,
+}
+
+/// Flattened plugin manifest used at runtime by the host registry and Extension Manager.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub id: String,
     pub name: String,
     pub version: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub author: String,
+    #[serde(default)]
+    pub min_aios_version: Option<String>,
     pub entry: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub capabilities: PluginCapabilities,
+    #[serde(default)]
+    pub preferences: Vec<PreferenceSpec>,
     #[serde(default)]
     pub commands: Vec<CommandSpec>,
 }
 
+/// Optional hint for the primary view type rendered by a `CommandMode::View` command.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DefaultViewKind {
+    #[default]
+    List,
+    Grid,
+    Detail,
+    Form,
+}
+
+/// Command declared inside `[[commands]]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandSpec {
     pub id: String,
     pub title: String,
+    #[serde(default)]
     pub subtitle: Option<String>,
     pub mode: CommandMode,
+    #[serde(default)]
+    pub default_view: DefaultViewKind,
+    #[serde(default)]
+    pub needs_confirmation: bool,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default)]
+    pub arguments: Vec<InlineArgumentSpec>,
+    #[serde(default)]
+    pub refresh_interval_secs: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_manifest_toml_with_capabilities_preferences_and_commands() {
+        let toml_src = r#"
+[plugin]
+id = "com.aios.quick-notes"
+name = "Quick Notes"
+version = "0.1.0"
+description = "Local markdown notes in a split List+Detail view."
+author = "AIOS"
+min_aios_version = "0.1.0"
+entry = "plugin.wasm"
+
+[capabilities]
+clipboard_write = true
+http_hosts = ["https://api.example.com"]
+fs_read = ["/tmp/notes"]
+secrets = false
+
+[[preferences]]
+name = "default_tag"
+title = "Default Tag"
+kind = "textfield"
+default = "inbox"
+
+[[commands]]
+id = "browse"
+title = "Browse Quick Notes"
+subtitle = "Quick Notes"
+mode = "view"
+default_view = "list"
+"#;
+
+        let parsed = PluginManifestFile::from_toml_str(toml_src).expect("valid manifest");
+        let manifest = parsed.into_manifest();
+        assert_eq!(manifest.id, "com.aios.quick-notes");
+        assert!(manifest.capabilities.clipboard_write);
+        assert_eq!(
+            manifest.capabilities.declared_keys(),
+            vec![
+                "clipboard_write",
+                "http:https://api.example.com",
+                "fs_read:/tmp/notes"
+            ]
+        );
+        assert_eq!(manifest.preferences.len(), 1);
+        assert_eq!(manifest.commands.len(), 1);
+        assert_eq!(manifest.commands[0].mode, CommandMode::View);
+    }
+
+    #[test]
+    fn builders_and_protocol_round_trip_json() {
+        let view = ListViewBuilder::new("Demo Plugin")
+            .showing_detail(true)
+            .section(
+                Some("Entries"),
+                None,
+                vec![
+                    ListItemBuilder::new("n1", "First Note")
+                        .subtitle("Inbox")
+                        .detail("# First Note\n\nBody text", vec![])
+                        .actions(
+                            ActionPanelBuilder::new()
+                                .action(ActionItem::new("copy", "Copy Note").shortcut("Enter"))
+                                .build(),
+                        )
+                        .build(),
+                ],
+            )
+            .build();
+
+        let resp = PluginResponse::render(view);
+        let json = resp.to_json().expect("serialize");
+        let decoded = PluginResponse::from_json(&json).expect("deserialize");
+        assert_eq!(resp, decoded);
+    }
 }

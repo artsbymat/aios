@@ -417,17 +417,20 @@ pub fn section_header(title: &str, subtitle: Option<&str>, theme: &AiosTheme) ->
 /// Lightweight Pure Rust Markdown block renderer for `Detail` and `List.Item.Detail`.
 pub fn render_markdown_blocks(markdown: &str, theme: &AiosTheme) -> Div {
     let c = &theme.colors;
-    let mut container = div().w_full().flex().flex_col().gap(px(8.0));
+    let mut container = div().w_full().min_w(px(0.0)).flex().flex_col().gap(px(8.0));
 
     let mut in_code_fence = false;
     let mut code_lang = String::new();
     let mut code_lines: Vec<String> = Vec::new();
+    let mut code_block_idx = 0usize;
 
     for line in markdown.lines() {
         let trimmed = line.trim_end();
         if let Some(rest) = trimmed.strip_prefix("```") {
             if in_code_fence {
-                let block = render_code_block(&code_lang, &code_lines.join("\n"), theme);
+                let block =
+                    render_code_block(code_block_idx, &code_lang, &code_lines.join("\n"), theme);
+                code_block_idx += 1;
                 container = container.child(block);
                 code_lines.clear();
                 code_lang.clear();
@@ -451,38 +454,49 @@ pub fn render_markdown_blocks(markdown: &str, theme: &AiosTheme) -> Div {
         if let Some(h1) = trimmed.strip_prefix("# ") {
             container = container.child(
                 div()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .whitespace_normal()
                     .text_color(c.text_primary)
                     .text_size(px(18.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .line_height(px(24.0))
-                    .child(h1.to_owned()),
+                    .child(soft_wrap_long_tokens(h1)),
             );
         } else if let Some(h2) = trimmed.strip_prefix("## ") {
             container = container.child(
                 div()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .whitespace_normal()
                     .pt(px(4.0))
                     .text_color(c.text_primary)
                     .text_size(px(15.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .line_height(px(20.0))
-                    .child(h2.to_owned()),
+                    .child(soft_wrap_long_tokens(h2)),
             );
         } else if let Some(h3) = trimmed.strip_prefix("### ") {
             container = container.child(
                 div()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .whitespace_normal()
                     .pt(px(2.0))
                     .text_color(c.text_primary)
                     .text_size(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .line_height(px(20.0))
-                    .child(h3.to_owned()),
+                    .child(soft_wrap_long_tokens(h3)),
             );
         } else if let Some(quote) = trimmed.strip_prefix("> ") {
             container = container.child(
                 div()
                     .w_full()
-                    .pl(px(10.0))
-                    .py(px(4.0))
+                    .min_w(px(0.0))
+                    .whitespace_normal()
+                    .px(px(10.0))
+                    .py(px(6.0))
                     .border_l_2()
                     .border_color(c.accent_solid)
                     .bg(c.bg_subtle)
@@ -490,12 +504,13 @@ pub fn render_markdown_blocks(markdown: &str, theme: &AiosTheme) -> Div {
                     .text_color(c.text_secondary)
                     .text_size(px(12.5))
                     .line_height(px(18.0))
-                    .child(quote.to_owned()),
+                    .child(soft_wrap_long_tokens(quote)),
             );
         } else if let Some(bullet) = trimmed.strip_prefix("- ") {
             container = container.child(
                 div()
                     .w_full()
+                    .min_w(px(0.0))
                     .flex()
                     .flex_row()
                     .items_start()
@@ -512,35 +527,46 @@ pub fn render_markdown_blocks(markdown: &str, theme: &AiosTheme) -> Div {
                     .child(
                         div()
                             .flex_1()
+                            .min_w(px(0.0))
+                            .whitespace_normal()
                             .text_color(c.text_primary)
                             .text_size(px(13.0))
                             .line_height(px(20.0))
-                            .child(bullet.to_owned()),
+                            .child(soft_wrap_long_tokens(bullet)),
                     ),
             );
         } else {
             container = container.child(
                 div()
                     .w_full()
+                    .min_w(px(0.0))
+                    .whitespace_normal()
                     .text_color(c.text_primary)
                     .text_size(px(13.0))
                     .line_height(px(20.0))
-                    .child(trimmed.to_owned()),
+                    .child(soft_wrap_long_tokens(trimmed)),
             );
         }
     }
 
     if in_code_fence && !code_lines.is_empty() {
-        container = container.child(render_code_block(&code_lang, &code_lines.join("\n"), theme));
+        container = container.child(render_code_block(
+            code_block_idx,
+            &code_lang,
+            &code_lines.join("\n"),
+            theme,
+        ));
     }
 
     container
 }
 
-fn render_code_block(lang: &str, code: &str, theme: &AiosTheme) -> Div {
+fn render_code_block(idx: usize, lang: &str, code: &str, theme: &AiosTheme) -> Div {
     let c = &theme.colors;
     let mut card = div()
         .w_full()
+        .min_w(px(0.0))
+        .overflow_hidden()
         .flex()
         .flex_col()
         .gap(px(4.0))
@@ -563,19 +589,73 @@ fn render_code_block(lang: &str, code: &str, theme: &AiosTheme) -> Div {
 
     card.child(
         div()
+            .id(("aios-code-block-scroll", idx))
             .w_full()
+            .min_w(px(0.0))
+            .whitespace_normal()
             .text_color(c.text_primary)
             .font_family(theme.font_mono)
-            .text_size(px(12.0))
-            .line_height(px(18.0))
-            .child(code.to_owned()),
+            .text_size(px(11.5))
+            .line_height(px(17.0))
+            .child(soft_wrap_long_tokens(code)),
     )
+}
+
+/// Inserts zero-width break opportunities (`U+200B`) inside long unbroken tokens (such as
+/// file paths, URLs, or D-Bus reverse-DNS names) so narrow columns wrap cleanly instead of clipping.
+#[must_use]
+pub fn soft_wrap_long_tokens(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 16);
+    let mut token = String::new();
+
+    let flush_token = |tok: &str, dst: &mut String| {
+        if tok.chars().count() <= 16 {
+            dst.push_str(tok);
+            return;
+        }
+        let mut run_len = 0usize;
+        for ch in tok.chars() {
+            dst.push(ch);
+            if matches!(ch, '/' | '\\' | ':' | '?' | '&' | '=' | ';' | '.' | '_') {
+                dst.push('\u{200B}');
+                run_len = 0;
+            } else {
+                run_len += 1;
+                if run_len >= 20 {
+                    dst.push('\u{200B}');
+                    run_len = 0;
+                }
+            }
+        }
+    };
+
+    for ch in input.chars() {
+        if ch.is_whitespace() {
+            if !token.is_empty() {
+                flush_token(&token, &mut out);
+                token.clear();
+            }
+            out.push(ch);
+        } else {
+            token.push(ch);
+        }
+    }
+    if !token.is_empty() {
+        flush_token(&token, &mut out);
+    }
+
+    out
 }
 
 /// Renders structured key-value metadata rows for `Detail` sidebar or `List.Item.Detail`.
 pub fn render_metadata_list(entries: &[MetadataEntry], theme: &AiosTheme) -> Div {
     let c = &theme.colors;
-    let mut stack = div().w_full().flex().flex_col().gap(px(10.0));
+    let mut stack = div()
+        .w_full()
+        .min_w(px(0.0))
+        .flex()
+        .flex_col()
+        .gap(px(10.0));
 
     for entry in entries {
         match entry {
@@ -583,6 +663,7 @@ pub fn render_metadata_list(entries: &[MetadataEntry], theme: &AiosTheme) -> Div
                 stack = stack.child(
                     div()
                         .w_full()
+                        .min_w(px(0.0))
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
@@ -595,10 +676,13 @@ pub fn render_metadata_list(entries: &[MetadataEntry], theme: &AiosTheme) -> Div
                         )
                         .child(
                             div()
+                                .w_full()
+                                .min_w(px(0.0))
+                                .whitespace_normal()
                                 .text_color(c.text_primary)
                                 .text_size(px(12.0))
                                 .line_height(px(16.0))
-                                .child(text.clone()),
+                                .child(soft_wrap_long_tokens(text)),
                         ),
                 );
             }
@@ -606,6 +690,7 @@ pub fn render_metadata_list(entries: &[MetadataEntry], theme: &AiosTheme) -> Div
                 stack = stack.child(
                     div()
                         .w_full()
+                        .min_w(px(0.0))
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
@@ -618,11 +703,14 @@ pub fn render_metadata_list(entries: &[MetadataEntry], theme: &AiosTheme) -> Div
                         )
                         .child(
                             div()
+                                .w_full()
+                                .min_w(px(0.0))
+                                .whitespace_normal()
                                 .text_color(c.accent_fg)
                                 .font_family(theme.font_mono)
                                 .text_size(px(11.5))
                                 .line_height(px(16.0))
-                                .child(text.clone()),
+                                .child(soft_wrap_long_tokens(text)),
                         ),
                 );
             }
