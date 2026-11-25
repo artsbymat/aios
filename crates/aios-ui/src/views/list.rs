@@ -6,8 +6,8 @@ use gpui::{
 };
 
 use crate::components::{
-    highlighted_text, item_badge, render_accessory, render_empty_state, render_loading_state,
-    render_markdown_blocks, render_metadata_list, section_header,
+    app_icon_or_badge, highlighted_text, render_accessory, render_empty_state,
+    render_loading_state, render_markdown_blocks, render_metadata_list, section_header,
 };
 use crate::shell::LauncherWindow;
 use crate::theme::AiosTheme;
@@ -68,7 +68,8 @@ pub fn render_list_view(
         .gap(px(2.0));
 
     let mut last_section: Option<usize> = None;
-    let showing_sections = frame.search_query.trim().is_empty();
+    let showing_sections = list.filtering == aios_core::view::FilterMode::Plugin
+        || frame.search_query.trim().is_empty();
     let mut child_cursor = 0usize;
     let mut selected_child_idx = 0usize;
 
@@ -138,7 +139,12 @@ pub fn render_list_view(
                         c.bg_canvas
                     }),
             )
-            .child(item_badge(badge_text, is_selected, theme))
+            .child(app_icon_or_badge(
+                item.icon_path.as_deref(),
+                badge_text,
+                is_selected,
+                theme,
+            ))
             .child(
                 div()
                     .flex_1()

@@ -63,6 +63,7 @@ pub fn build_root_showcase_frame() -> NavFrame {
                             "40/60 split list with Markdown & Metadata preview".to_string(),
                         ),
                         icon: Some("LD".to_string()),
+                        icon_path: None,
                         alias: Some("cb".to_string()),
                         keywords: vec!["clipboard".into(), "split".into(), "list".into()],
                         filter_group: Some("views".to_string()),
@@ -120,6 +121,7 @@ pub fn build_root_showcase_frame() -> NavFrame {
                             "4-column aspect-locked tiles with arrow-key navigation".to_string(),
                         ),
                         icon: Some("GR".to_string()),
+                        icon_path: None,
                         alias: Some("gr".to_string()),
                         keywords: vec![
                             "grid".into(),
@@ -143,6 +145,7 @@ pub fn build_root_showcase_frame() -> NavFrame {
                         title: "Detail + Metadata View".to_string(),
                         subtitle: Some(format!("Wayland surface inspector ({compositor:?})")),
                         icon: Some("DT".to_string()),
+                        icon_path: None,
                         alias: Some("dt".to_string()),
                         keywords: vec![
                             "detail".into(),
@@ -170,6 +173,7 @@ pub fn build_root_showcase_frame() -> NavFrame {
                             "All field types, Tab focus order, and inline validation".to_string(),
                         ),
                         icon: Some("FM".to_string()),
+                        icon_path: None,
                         alias: Some("fm".to_string()),
                         keywords: vec![
                             "form".into(),
@@ -200,6 +204,7 @@ pub fn build_root_showcase_frame() -> NavFrame {
                             "Shows clear cause and immediate keyboard recovery".to_string(),
                         ),
                         icon: Some("EM".to_string()),
+                        icon_path: None,
                         alias: None,
                         keywords: vec!["empty".into(), "state".into()],
                         filter_group: Some("states".to_string()),
@@ -218,6 +223,7 @@ pub fn build_root_showcase_frame() -> NavFrame {
                             "Header 2px progress track and descriptive status text".to_string(),
                         ),
                         icon: Some("LD".to_string()),
+                        icon_path: None,
                         alias: None,
                         keywords: vec!["loading".into(), "progress".into(), "state".into()],
                         filter_group: Some("states".to_string()),
@@ -237,6 +243,7 @@ pub fn build_root_showcase_frame() -> NavFrame {
                             "Simulated plugin timeout with recovery actions".to_string(),
                         ),
                         icon: Some("ER".to_string()),
+                        icon_path: None,
                         alias: None,
                         keywords: vec!["error".into(), "crash".into(), "wasm".into()],
                         filter_group: Some("states".to_string()),
@@ -256,6 +263,7 @@ pub fn build_root_showcase_frame() -> NavFrame {
                             "Destructive confirmation dialog closable with Esc".to_string(),
                         ),
                         icon: Some("AL".to_string()),
+                        icon_path: None,
                         alias: None,
                         keywords: vec![
                             "alert".into(),
@@ -282,6 +290,7 @@ pub fn build_root_showcase_frame() -> NavFrame {
                             "Separate non-interactive LayerShell pill (`aios-hud`)".to_string(),
                         ),
                         icon: Some("HD".to_string()),
+                        icon_path: None,
                         alias: None,
                         keywords: vec!["hud".into(), "overlay".into(), "pill".into()],
                         filter_group: Some("states".to_string()),
@@ -305,6 +314,7 @@ pub fn build_root_showcase_frame() -> NavFrame {
                         "Switch Basalt Dark, Warm Alabaster Light, or XDG Portal".to_string(),
                     ),
                     icon: Some("TH".to_string()),
+                    icon_path: None,
                     alias: Some("th".to_string()),
                     keywords: vec![
                         "theme".into(),
@@ -380,6 +390,7 @@ pub fn build_split_list_detail_frame() -> NavFrame {
                     title: "hyprland.conf layerrule".to_string(),
                     subtitle: Some("Compositor rule snippet".to_string()),
                     icon: Some("HY".to_string()),
+                    icon_path: None,
                     alias: None,
                     keywords: vec!["hyprland".into(), "blur".into(), "wayland".into()],
                     filter_group: Some("config".to_string()),
@@ -418,6 +429,7 @@ pub fn build_split_list_detail_frame() -> NavFrame {
                     title: "config.kdl layer-rule".to_string(),
                     subtitle: Some("Niri compositor snippet".to_string()),
                     icon: Some("NR".to_string()),
+                    icon_path: None,
                     alias: None,
                     keywords: vec!["niri".into(), "kdl".into(), "layer-rule".into()],
                     filter_group: Some("config".to_string()),
@@ -451,6 +463,7 @@ pub fn build_split_list_detail_frame() -> NavFrame {
                     title: "aios-fuzzy SearchSession".to_string(),
                     subtitle: Some("Adaptive inline + Rayon pipeline".to_string()),
                     icon: Some("RS".to_string()),
+                    icon_path: None,
                     alias: None,
                     keywords: vec!["rust".into(), "fuzzy".into(), "parallel".into()],
                     filter_group: Some("code".to_string()),
@@ -1011,6 +1024,7 @@ pub fn open_deep_link(state: &mut LauncherState, uri: &str) {
     let normalized = uri.trim().trim_start_matches("aios://");
     state.pop_to_root();
     match normalized {
+        "workbench" | "demo" | "demo/workbench" => state.push(build_root_showcase_frame()),
         "demo/list-detail" | "list-detail" => state.push(build_split_list_detail_frame()),
         "demo/grid" | "grid" => state.push(build_grid_frame()),
         "demo/detail" | "detail" => state.push(build_detail_frame()),
@@ -1018,10 +1032,13 @@ pub fn open_deep_link(state: &mut LauncherState, uri: &str) {
         "demo/empty" | "empty" => state.push(build_empty_state_frame()),
         "demo/loading" | "loading" => state.push(build_loading_state_frame()),
         "demo/error" | "error" => state.push(build_error_state_frame()),
+        "root" | "" => {}
         _ => {
-            if !normalized.is_empty() {
-                state.show_toast(ToastStyle::Success, format!("Opened {uri}"), None);
-            }
+            state.show_toast(
+                ToastStyle::Failure,
+                format!("No plugin handler installed for {uri}"),
+                Some("External plugin runtime lands in Phase 4.".to_string()),
+            );
         }
     }
 }

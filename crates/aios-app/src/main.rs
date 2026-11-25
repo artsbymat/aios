@@ -91,7 +91,7 @@ fn main() -> Result<()> {
         Command::Preview { uri, theme } => {
             let paths = AiosPaths::discover()?;
             let config = AiosConfig::load_or_default(&paths)?;
-            run_preview_app(config, uri, theme.map(ThemeMode::from));
+            run_preview_app(config, paths, uri, theme.map(ThemeMode::from));
             Ok(())
         }
         Command::Toggle => dispatch_ipc(DaemonIpcCommand::Toggle),
@@ -112,11 +112,18 @@ fn run_doctor() -> Result<()> {
     let resolved_theme = config.theme.mode.resolve(portal_scheme.prefers_dark());
     let palette = palette_for(resolved_theme);
     let daemon_running = IpcClient::new(&paths.runtime_socket).is_daemon_running();
+    let discovered_apps = aios_builtin::scan_desktop_applications();
+    let apps_with_icons = discovered_apps
+        .iter()
+        .filter(|a| a.icon_path.is_some())
+        .count();
 
     tracing::info!(
         compositor = ?compositor,
         ?portal_scheme,
         daemon_running,
+        discovered_apps = discovered_apps.len(),
+        apps_with_icons,
         schema_version = db.schema_version()?,
         journal_mode = %db.journal_mode()?,
         "aios doctor check complete"
@@ -137,8 +144,13 @@ fn run_doctor() -> Result<()> {
     println!("  sqlite_mode   : {}", db.journal_mode()?);
     println!("  schema_ver    : {}", db.schema_version()?);
     println!(
-        "  builtins      : {}",
-        aios_builtin::planned_builtin_ids().len()
+        "  core_builtins : {}",
+        aios_builtin::planned_builtin_ids().join(", ")
+    );
+    println!(
+        "  desktop_apps  : {} indexed ({} with resolved icons)",
+        discovered_apps.len(),
+        apps_with_icons
     );
     Ok(())
 }

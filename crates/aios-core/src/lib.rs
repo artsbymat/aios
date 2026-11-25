@@ -12,4 +12,4 @@ pub use config::{AiosConfig, ResolvedTheme, ThemeMode};
 pub use error::{AiosError, Result};
 pub use logging::{LogFormat, LogOptions, init_logging};
 pub use paths::AiosPaths;
-pub use storage::{Database, LATEST_SCHEMA_VERSION};
+pub use storage::{Database, LATEST_SCHEMA_VERSION, StoredFrecency};

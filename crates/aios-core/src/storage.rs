@@ -2,9 +2,19 @@
 
 use crate::error::{AiosError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub const LATEST_SCHEMA_VERSION: u32 = 1;
+
+/// Aggregated frecency row read from SQLite `frecency` table.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoredFrecency {
+    pub hits: u32,
+    pub last_used_at: i64,
+    pub pinned: bool,
+    pub query_prefix_hits: u32,
+}
 
 struct Migration {
     version: u32,
@@ -240,6 +250,130 @@ impl Database {
         )?;
         Ok(affected > 0)
     }
+
+    /// Records an item execution in the `frecency` table, updating both global hits (`''`)
+    /// and query-prefix affinity when `query_prefix` is non-empty.
+    pub fn record_frecency_hit(
+        &self,
+        item_id: &str,
+        query_prefix: &str,
+        now_epoch: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO frecency (item_id, query_prefix, hits, last_used_at, pinned)
+             VALUES (?1, '', 1, ?2, 0)
+             ON CONFLICT(item_id, query_prefix) DO UPDATE SET
+                hits = frecency.hits + 1,
+                last_used_at = excluded.last_used_at",
+            params![item_id, now_epoch],
+        )?;
+
+        let norm_prefix = query_prefix.trim().to_lowercase();
+        if !norm_prefix.is_empty() {
+            let prefix_key: String = norm_prefix.chars().take(24).collect();
+            self.conn.execute(
+                "INSERT INTO frecency (item_id, query_prefix, hits, last_used_at, pinned)
+                 VALUES (?1, ?2, 1, ?3, 0)
+                 ON CONFLICT(item_id, query_prefix) DO UPDATE SET
+                    hits = frecency.hits + 1,
+                    last_used_at = excluded.last_used_at",
+                params![item_id, prefix_key, now_epoch],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Persists pinned state for an item on its global (`query_prefix = ''`) frecency row.
+    pub fn set_item_pinned(&self, item_id: &str, pinned: bool, now_epoch: i64) -> Result<()> {
+        let pin_int = i64::from(pinned);
+        self.conn.execute(
+            "INSERT INTO frecency (item_id, query_prefix, hits, last_used_at, pinned)
+             VALUES (?1, '', 0, ?2, ?3)
+             ON CONFLICT(item_id, query_prefix) DO UPDATE SET
+                pinned = excluded.pinned",
+            params![item_id, now_epoch, pin_int],
+        )?;
+        Ok(())
+    }
+
+    /// Loads all frecency records aggregated per `item_id`, including `query_prefix_hits`
+    /// matching the active search prefix.
+    pub fn load_frecency_records(
+        &self,
+        query_prefix: &str,
+    ) -> Result<HashMap<String, StoredFrecency>> {
+        let mut map: HashMap<String, StoredFrecency> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT item_id, hits, last_used_at, pinned
+                 FROM frecency
+                 WHERE query_prefix = ''",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    StoredFrecency {
+                        hits: row.get::<_, u32>(1)?,
+                        last_used_at: row.get::<_, i64>(2)?,
+                        pinned: row.get::<_, i64>(3)? != 0,
+                        query_prefix_hits: 0,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (id, rec) = row?;
+                map.insert(id, rec);
+            }
+        }
+
+        let norm_prefix = query_prefix.trim().to_lowercase();
+        if !norm_prefix.is_empty() {
+            let prefix_key: String = norm_prefix.chars().take(24).collect();
+            let mut stmt = self
+                .conn
+                .prepare("SELECT item_id, hits FROM frecency WHERE query_prefix = ?1")?;
+            let rows = stmt.query_map(params![prefix_key], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+            })?;
+            for row in rows {
+                let (id, prefix_hits) = row?;
+                let entry = map.entry(id).or_default();
+                entry.query_prefix_hits = prefix_hits;
+            }
+        }
+
+        Ok(map)
+    }
+
+    /// Loads the set of user-hidden item IDs (e.g. hidden desktop applications).
+    pub fn list_hidden_items(&self) -> Result<HashSet<String>> {
+        let Some(blob) = self.plugin_storage_get("aios.applications", "hidden_items")? else {
+            return Ok(HashSet::new());
+        };
+        let ids: Vec<String> = serde_json::from_slice(&blob).unwrap_or_default();
+        Ok(ids.into_iter().collect())
+    }
+
+    /// Hides or unhides an item ID persistently.
+    pub fn set_item_hidden(&self, item_id: &str, hidden: bool, now_epoch: i64) -> Result<()> {
+        let mut set = self.list_hidden_items()?;
+        if hidden {
+            set.insert(item_id.to_owned());
+        } else {
+            set.remove(item_id);
+        }
+        let mut sorted: Vec<String> = set.into_iter().collect();
+        sorted.sort();
+        let bytes = serde_json::to_vec(&sorted)
+            .map_err(|e| AiosError::InvalidConfig(format!("failed to encode hidden items: {e}")))?;
+        self.plugin_storage_set("aios.applications", "hidden_items", &bytes, now_epoch)
+    }
+
+    /// Clears all hidden item overrides.
+    pub fn clear_hidden_items(&self) -> Result<()> {
+        let _ = self.plugin_storage_remove("aios.applications", "hidden_items")?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -400,5 +534,75 @@ mod tests {
             params!["com.example.docker", "clipboard_write", 1, 1_700_000_100],
         )
         .expect("insert permission");
+    }
+
+    #[test]
+    fn frecency_hits_pinning_and_query_prefix_round_trip() {
+        let db = Database::open_in_memory().expect("in-memory db");
+
+        db.record_frecency_hit("app:firefox", "ff", 1_700_000_100)
+            .expect("first hit");
+        db.record_frecency_hit("app:firefox", "  FF  ", 1_700_000_200)
+            .expect("second hit normalized prefix");
+        db.record_frecency_hit("app:firefox", "", 1_700_000_300)
+            .expect("third global hit");
+        db.set_item_pinned("app:firefox", true, 1_700_000_350)
+            .expect("pin item");
+        db.set_item_pinned("app:alacritty", true, 1_700_000_360)
+            .expect("pin item without hits");
+
+        let with_prefix = db
+            .load_frecency_records("ff")
+            .expect("load frecency with prefix");
+        let ff = with_prefix.get("app:firefox").expect("firefox row");
+        assert_eq!(ff.hits, 3);
+        assert_eq!(ff.last_used_at, 1_700_000_300);
+        assert!(ff.pinned);
+        assert_eq!(ff.query_prefix_hits, 2);
+
+        let term = with_prefix.get("app:alacritty").expect("alacritty row");
+        assert_eq!(term.hits, 0);
+        assert!(term.pinned);
+        assert_eq!(term.query_prefix_hits, 0);
+
+        let no_prefix = db
+            .load_frecency_records("")
+            .expect("load frecency without prefix");
+        assert_eq!(
+            no_prefix
+                .get("app:firefox")
+                .expect("firefox row")
+                .query_prefix_hits,
+            0
+        );
+
+        db.set_item_pinned("app:firefox", false, 1_700_000_400)
+            .expect("unpin item");
+        let after_unpin = db.load_frecency_records("ff").expect("reload");
+        assert!(!after_unpin.get("app:firefox").expect("firefox").pinned);
+    }
+
+    #[test]
+    fn hidden_items_persistence_and_clear() {
+        let db = Database::open_in_memory().expect("in-memory db");
+        assert!(db.list_hidden_items().expect("initial empty").is_empty());
+
+        db.set_item_hidden("app:b", true, 1_700_000_100)
+            .expect("hide b");
+        db.set_item_hidden("app:a", true, 1_700_000_101)
+            .expect("hide a");
+        let hidden = db.list_hidden_items().expect("list hidden");
+        assert_eq!(hidden.len(), 2);
+        assert!(hidden.contains("app:a"));
+        assert!(hidden.contains("app:b"));
+
+        db.set_item_hidden("app:a", false, 1_700_000_102)
+            .expect("unhide a");
+        let remaining = db.list_hidden_items().expect("list remaining");
+        assert_eq!(remaining.len(), 1);
+        assert!(remaining.contains("app:b"));
+
+        db.clear_hidden_items().expect("clear hidden");
+        assert!(db.list_hidden_items().expect("cleared").is_empty());
     }
 }

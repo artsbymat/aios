@@ -4,15 +4,17 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use aios_builtin::{RootActionOutcome, RootSearchOrchestrator};
 use aios_core::config::{AiosConfig, ThemeMode};
 use aios_core::paths::AiosPaths;
+use aios_core::storage::Database;
 use aios_core::view::{FilterDropdown, ToastStyle, ViewNode};
 use aios_daemon::{DaemonIpcCommand, DaemonIpcResponse, DaemonStatus};
 use aios_wayland::{IpcServer, PortalThemeWatcher, detect_compositor};
 use gpui::{
-    AnyElement, App, Bounds, Context, FocusHandle, Focusable, FontWeight, KeyDownEvent,
-    LinuxWindowBackground, QuitMode, Render, ScrollHandle, Size, Window, WindowBounds,
-    WindowHandle, WindowKind, WindowOptions, div,
+    AnyElement, App, Bounds, ClipboardItem, Context, FocusHandle, Focusable, FontWeight,
+    KeyDownEvent, LinuxWindowBackground, QuitMode, Render, ScrollHandle, Size, Window,
+    WindowBounds, WindowHandle, WindowKind, WindowOptions, div,
     layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions},
     point,
     prelude::*,
@@ -33,9 +35,11 @@ use crate::views::{
     list::render_list_view,
 };
 
-/// Main GPUI entity owning the active launcher `NavStack`, keyboard focus, scroll handles, and overlays.
+/// Main GPUI entity owning the active launcher `NavStack`, Root Search orchestrator,
+/// keyboard focus, scroll handles, and overlays.
 pub struct LauncherWindow {
     pub state: LauncherState,
+    pub root_search: Rc<RefCell<RootSearchOrchestrator>>,
     pub focus_handle: FocusHandle,
     pub list_scroll: ScrollHandle,
     pub grid_scroll: ScrollHandle,
@@ -59,17 +63,27 @@ impl Focusable for LauncherWindow {
 }
 
 impl LauncherWindow {
-    pub fn new(initial_uri: Option<&str>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        root_search: Rc<RefCell<RootSearchOrchestrator>>,
+        initial_uri: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
-        let mut state = LauncherState::new(build_root_showcase_frame());
+        let initial_root_view = root_search.borrow_mut().build_root_view("", "all");
+        let mut state = LauncherState::new(crate::state::NavFrame::new(
+            "root.search",
+            initial_root_view,
+        ));
         if let Some(uri) = initial_uri {
             open_deep_link(&mut state, uri);
         }
 
         Self {
             state,
+            root_search,
             focus_handle,
             list_scroll: ScrollHandle::new(),
             grid_scroll: ScrollHandle::new(),
@@ -77,6 +91,29 @@ impl LauncherWindow {
             action_panel_scroll: ScrollHandle::new(),
             sync_scroll: Cell::new(true),
         }
+    }
+
+    /// Re-runs Root Search orchestrator when the active frame is `root.search`.
+    pub fn refresh_root_search(&mut self) {
+        if self.state.current().id != "root.search" {
+            return;
+        }
+        let query = self.state.current().search_query.clone();
+        let active_filter = match &self.state.current().view {
+            ViewNode::List(list) => list
+                .filter_dropdown
+                .as_ref()
+                .map(|d| d.selected_id.clone())
+                .unwrap_or_else(|| "all".to_string()),
+            _ => "all".to_string(),
+        };
+        let next_view = self
+            .root_search
+            .borrow_mut()
+            .build_root_view(&query, &active_filter);
+        let frame = self.state.current_mut();
+        frame.view = next_view;
+        frame.clamp_selection();
     }
 
     pub fn request_scroll_sync(&self) {
@@ -90,6 +127,7 @@ impl LauncherWindow {
 
     pub fn open_uri(&mut self, uri: &str, cx: &mut Context<Self>) {
         open_deep_link(&mut self.state, uri);
+        self.refresh_root_search();
         self.request_scroll_sync();
         cx.notify();
     }
@@ -120,7 +158,67 @@ impl LauncherWindow {
 
     pub fn execute_action(&mut self, action_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.state.overlay = None;
+
+        // Handle Root Search & Application Launcher actions first.
+        let is_root_action = action_id.starts_with("app.")
+            || action_id.starts_with("root.")
+            || action_id.starts_with("core.")
+            || action_id.starts_with("fallback.");
+
+        if is_root_action {
+            let active_query = self.state.current().search_query.clone();
+            let outcome = self
+                .root_search
+                .borrow_mut()
+                .execute_action(action_id, &active_query);
+
+            match outcome {
+                RootActionOutcome::Launched { hud_title } => {
+                    show_hud_pill(hud_title, cx);
+                    window.remove_window();
+                }
+                RootActionOutcome::CopyToClipboard { text, hud_title } => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    self.state
+                        .show_toast(ToastStyle::Success, hud_title.clone(), None);
+                    show_hud_pill(hud_title, cx);
+                }
+                RootActionOutcome::PushView { frame_id, view } => {
+                    self.state
+                        .push(crate::state::NavFrame::new(frame_id, *view));
+                    self.request_scroll_sync();
+                }
+                RootActionOutcome::OpenUri { uri } => {
+                    open_deep_link(&mut self.state, &uri);
+                    self.refresh_root_search();
+                    self.request_scroll_sync();
+                }
+                RootActionOutcome::OpenWorkbench => {
+                    self.state.push(build_root_showcase_frame());
+                    self.request_scroll_sync();
+                }
+                RootActionOutcome::CycleTheme => {
+                    self.apply_effect(ShellEffect::CycleTheme, window, cx);
+                }
+                RootActionOutcome::Refresh { toast_title } => {
+                    self.refresh_root_search();
+                    self.state
+                        .show_toast(ToastStyle::Success, toast_title, None);
+                    self.request_scroll_sync();
+                }
+                RootActionOutcome::Error { title, message } => {
+                    self.state
+                        .show_toast(ToastStyle::Failure, title, Some(message));
+                }
+            }
+            cx.notify();
+            return;
+        }
+
         let effect = dispatch_demo_action(&mut self.state, action_id);
+        if action_id == "search.clear" {
+            self.refresh_root_search();
+        }
         self.request_scroll_sync();
         self.apply_effect(effect, window, cx);
         cx.notify();
@@ -167,6 +265,7 @@ impl LauncherWindow {
         // Global keyboard shortcuts matching `DESIGN.md`.
         if key == "escape" {
             let effect = self.state.handle_escape();
+            self.refresh_root_search();
             self.apply_effect(effect, window, cx);
             cx.notify();
             return;
@@ -184,13 +283,22 @@ impl LauncherWindow {
             return;
         }
 
-        if mods.control && key.eq_ignore_ascii_case("p") {
-            if self.state.overlay.is_none() && self.current_filter_dropdown().is_some() {
+        if mods.control && key.eq_ignore_ascii_case("f") {
+            let can_toggle = self.state.overlay.is_none()
+                || matches!(
+                    self.state.overlay,
+                    Some(ActiveOverlay::FilterDropdown { .. })
+                );
+            if can_toggle && self.current_filter_dropdown().is_some() {
                 self.state.toggle_filter_dropdown();
-            } else {
-                self.state.move_vertical(-1);
-                self.request_scroll_sync();
+                cx.notify();
             }
+            return;
+        }
+
+        if mods.control && key.eq_ignore_ascii_case("p") {
+            self.state.move_vertical(-1);
+            self.request_scroll_sync();
             cx.notify();
             return;
         }
@@ -239,6 +347,7 @@ impl LauncherWindow {
 
         if key == "backspace" {
             self.state.handle_backspace();
+            self.refresh_root_search();
             self.request_scroll_sync();
             cx.notify();
             return;
@@ -261,6 +370,8 @@ impl LauncherWindow {
             && !ch.chars().all(char::is_control)
         {
             self.state.insert_text(ch);
+            self.refresh_root_search();
+            self.request_scroll_sync();
             cx.notify();
         }
     }
@@ -274,6 +385,8 @@ impl LauncherWindow {
                 }
                 ActiveOverlay::FilterDropdown { selected_index } => {
                     self.state.apply_filter_option(selected_index);
+                    self.refresh_root_search();
+                    self.request_scroll_sync();
                     cx.notify();
                     return;
                 }
@@ -343,6 +456,8 @@ impl LauncherWindow {
                 .hover(|s| s.bg(c.bg_hover).border_color(c.border_default))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.state.pop();
+                    this.refresh_root_search();
+                    this.request_scroll_sync();
                     cx.notify();
                 }))
                 .child(back_arrow_icon(c.text_primary))
@@ -437,7 +552,7 @@ impl LauncherWindow {
                             .font_weight(FontWeight::MEDIUM)
                             .child(active_label.to_owned()),
                     )
-                    .child(keycap("Ctrl+P", theme)),
+                    .child(keycap("Ctrl+F", theme)),
             );
         }
 
@@ -923,6 +1038,8 @@ impl LauncherWindow {
                             .hover(|s| s.bg(if is_sel { c.bg_selected } else { c.bg_hover }))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.state.apply_filter_option(idx);
+                                this.refresh_root_search();
+                                this.request_scroll_sync();
                                 cx.notify();
                             }))
                             .child(
@@ -1082,6 +1199,7 @@ impl Render for LauncherWindow {
 
 fn open_launcher_window(
     config: &AiosConfig,
+    root_search: Rc<RefCell<RootSearchOrchestrator>>,
     initial_uri: Option<&str>,
     cx: &mut App,
 ) -> anyhow::Result<WindowHandle<LauncherWindow>> {
@@ -1112,10 +1230,12 @@ fn open_launcher_window(
 
     let uri_owned = initial_uri.map(ToOwned::to_owned);
     let uri_fallback = uri_owned.clone();
+    let rs_primary = Rc::clone(&root_search);
+    let rs_fallback = root_search;
 
     let handle = cx
         .open_window(layer_opts, move |window, cx| {
-            cx.new(|cx| LauncherWindow::new(uri_owned.as_deref(), window, cx))
+            cx.new(|cx| LauncherWindow::new(rs_primary, uri_owned.as_deref(), window, cx))
         })
         .or_else(|err| {
             tracing::warn!(
@@ -1129,11 +1249,26 @@ fn open_launcher_window(
                 .kind(WindowKind::PopUp)
                 .linux_window_background(LinuxWindowBackground::Transparent);
             cx.open_window(fallback_opts, move |window, cx| {
-                cx.new(|cx| LauncherWindow::new(uri_fallback.as_deref(), window, cx))
+                cx.new(|cx| LauncherWindow::new(rs_fallback, uri_fallback.as_deref(), window, cx))
             })
         })?;
 
     Ok(handle)
+}
+
+fn open_orchestrator(config: &AiosConfig, paths: &AiosPaths) -> RootSearchOrchestrator {
+    let db = match Database::open(&paths.database_file()) {
+        Ok(db) => Some(db),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                path = %paths.database_file().display(),
+                "SQLite unavailable; using in-memory frecency database for this session"
+            );
+            Database::open_in_memory().ok()
+        }
+    };
+    RootSearchOrchestrator::new(config.clone(), db)
 }
 
 /// Runs the persistent single-instance AIOS daemon with Unix socket IPC + live XDG portal theme watcher.
@@ -1145,15 +1280,18 @@ pub fn run_daemon_app(
     let (_ipc_server, ipc_rx) = IpcServer::bind(&paths.runtime_socket)?;
     let (_portal_watcher, initial_scheme, portal_rx) = PortalThemeWatcher::spawn();
     let compositor = detect_compositor();
+    let orchestrator = open_orchestrator(&config, &paths);
 
     tracing::info!(
         socket = %paths.runtime_socket.display(),
         ?compositor,
         ?initial_scheme,
+        indexed_apps = orchestrator.visible_app_count(),
         "starting AIOS GPUI daemon"
     );
 
     gpui_platform::application()
+        .with_assets(crate::fonts::AiosAssetSource)
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
             // Keep IPC server & portal watcher alive for the lifetime of the GPUI loop.
@@ -1167,10 +1305,13 @@ pub fn run_daemon_app(
                 config.theme.reduced_motion,
             ));
 
+            let root_search = Rc::new(RefCell::new(orchestrator));
             let active_window: Rc<RefCell<Option<WindowHandle<LauncherWindow>>>> =
                 Rc::new(RefCell::new(None));
 
-            if show_immediately && let Ok(handle) = open_launcher_window(&config, None, cx) {
+            if show_immediately
+                && let Ok(handle) = open_launcher_window(&config, Rc::clone(&root_search), None, cx)
+            {
                 *active_window.borrow_mut() = Some(handle);
             }
 
@@ -1192,6 +1333,7 @@ pub fn run_daemon_app(
             // Process incoming Unix socket IPC commands (`toggle`, `show`, `hide`, `open`, `status`).
             let cfg_for_ipc = config.clone();
             let win_for_ipc = Rc::clone(&active_window);
+            let rs_for_ipc = Rc::clone(&root_search);
             cx.spawn(async move |cx| {
                 let _hold = _keep_alive;
                 while let Ok(envelope) = ipc_rx.recv().await {
@@ -1211,7 +1353,12 @@ pub fn run_daemon_app(
                                     let _ =
                                         handle.update(cx, |_, window, _| window.remove_window());
                                 } else {
-                                    match open_launcher_window(&cfg_for_ipc, None, cx) {
+                                    match open_launcher_window(
+                                        &cfg_for_ipc,
+                                        Rc::clone(&rs_for_ipc),
+                                        None,
+                                        cx,
+                                    ) {
                                         Ok(h) => *win_for_ipc.borrow_mut() = Some(h),
                                         Err(err) => {
                                             reply = DaemonIpcResponse::Error {
@@ -1226,7 +1373,12 @@ pub fn run_daemon_app(
                                     let _ = handle.update(cx, |_, window, _| {
                                         window.activate();
                                     });
-                                } else if let Ok(h) = open_launcher_window(&cfg_for_ipc, None, cx) {
+                                } else if let Ok(h) = open_launcher_window(
+                                    &cfg_for_ipc,
+                                    Rc::clone(&rs_for_ipc),
+                                    None,
+                                    cx,
+                                ) {
                                     *win_for_ipc.borrow_mut() = Some(h);
                                 }
                             }
@@ -1243,7 +1395,12 @@ pub fn run_daemon_app(
                                         window.activate();
                                     });
                                 } else {
-                                    match open_launcher_window(&cfg_for_ipc, Some(uri), cx) {
+                                    match open_launcher_window(
+                                        &cfg_for_ipc,
+                                        Rc::clone(&rs_for_ipc),
+                                        Some(uri),
+                                        cx,
+                                    ) {
                                         Ok(h) => *win_for_ipc.borrow_mut() = Some(h),
                                         Err(err) => {
                                             reply = DaemonIpcResponse::Error {
@@ -1279,9 +1436,10 @@ pub fn run_daemon_app(
     Ok(())
 }
 
-/// Runs a standalone foreground Phase 2 workbench window (exits when closed with `Esc`).
+/// Runs a standalone foreground launcher window (exits when closed with `Esc`).
 pub fn run_preview_app(
     mut config: AiosConfig,
+    paths: AiosPaths,
     initial_uri: Option<String>,
     theme_override: Option<ThemeMode>,
 ) {
@@ -1289,8 +1447,10 @@ pub fn run_preview_app(
         config.theme.mode = mode;
     }
     let (_portal_watcher, initial_scheme, portal_rx) = PortalThemeWatcher::spawn();
+    let orchestrator = open_orchestrator(&config, &paths);
 
     gpui_platform::application()
+        .with_assets(crate::fonts::AiosAssetSource)
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx: &mut App| {
             let _keep_portal = _portal_watcher;
@@ -1302,7 +1462,8 @@ pub fn run_preview_app(
                 config.theme.reduced_motion,
             ));
 
-            let handle = open_launcher_window(&config, initial_uri.as_deref(), cx)
+            let root_search = Rc::new(RefCell::new(orchestrator));
+            let handle = open_launcher_window(&config, root_search, initial_uri.as_deref(), cx)
                 .expect("failed to open AIOS preview window");
 
             cx.spawn(async move |cx| {

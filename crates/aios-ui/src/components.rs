@@ -3,6 +3,7 @@
 //! Empty/Loading/Error states, ActionPanel popover, FilterDropdown, and ConfirmAlert modal.
 
 use std::ops::Range;
+use std::path::PathBuf;
 
 use aios_core::view::{
     Accessory, ConfirmAlert, EmptyView, ErrorView, MetadataEntry, SemanticTone, ToastMessage,
@@ -10,7 +11,8 @@ use aios_core::view::{
 };
 use gpui::{
     AnyElement, Background, BoxShadow, Div, FontWeight, HighlightStyle, Hsla, IntoElement,
-    ParentElement, PathBuilder, Rgba, Styled, StyledText, canvas, div, point, prelude::*, px,
+    ObjectFit, ParentElement, PathBuilder, Rgba, Styled, StyledText, canvas, div, img, point,
+    prelude::*, px,
 };
 
 use crate::theme::AiosTheme;
@@ -313,6 +315,41 @@ pub fn render_accessory(accessory: &Accessory, theme: &AiosTheme) -> AnyElement 
             .into_any_element(),
         Accessory::Tag { label, tone } => semantic_tag(label, *tone, theme).into_any_element(),
     }
+}
+
+/// Renders a resolved XDG application icon (PNG/SVG) inside a 24x24px frame, falling back
+/// cleanly to [`item_badge`] when no icon file is present or if decoding fails.
+pub fn app_icon_or_badge(
+    icon_path: Option<&str>,
+    fallback_label: &str,
+    selected: bool,
+    theme: &AiosTheme,
+) -> AnyElement {
+    if let Some(path) = icon_path {
+        let pb = PathBuf::from(path);
+        let label_owned = fallback_label.to_owned();
+        let theme_clone = theme.clone();
+        return div()
+            .w(px(24.0))
+            .h(px(24.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme.metrics.radius_xs)
+            .overflow_hidden()
+            .child(
+                img(pb)
+                    .w(px(22.0))
+                    .h(px(22.0))
+                    .object_fit(ObjectFit::Contain)
+                    .with_fallback(move || {
+                        item_badge(&label_owned, selected, &theme_clone).into_any_element()
+                    }),
+            )
+            .into_any_element();
+    }
+    item_badge(fallback_label, selected, theme).into_any_element()
 }
 
 /// Renders a compact 24x24 geometric item badge (monogram/glyph) without stock sparkle icons.

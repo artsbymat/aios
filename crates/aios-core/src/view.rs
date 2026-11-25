@@ -101,6 +101,8 @@ pub struct ListItem {
     pub title: String,
     pub subtitle: Option<String>,
     pub icon: Option<String>,
+    /// Optional resolved filesystem path to a PNG/SVG icon (e.g. XDG app icon).
+    pub icon_path: Option<String>,
     pub alias: Option<String>,
     pub keywords: Vec<String>,
     pub filter_group: Option<String>,

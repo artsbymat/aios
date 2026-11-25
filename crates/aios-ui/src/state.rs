@@ -125,7 +125,29 @@ impl NavFrame {
                     continue;
                 }
 
-                if list.filtering == FilterMode::Plugin || query.is_empty() {
+                if list.filtering == FilterMode::Plugin {
+                    let match_result = if query.is_empty() {
+                        MatchResult {
+                            score: 0,
+                            primary_indices: Vec::new(),
+                            secondary_indices: Vec::new(),
+                        }
+                    } else {
+                        let adapter = ListItemSearchAdapter(item);
+                        score_item(&adapter, query, engine.as_ref(), None, 0, &config).unwrap_or(
+                            MatchResult {
+                                score: 0,
+                                primary_indices: Vec::new(),
+                                secondary_indices: Vec::new(),
+                            },
+                        )
+                    };
+                    entries.push(FilteredListEntry {
+                        section_index: s_idx,
+                        item_index: i_idx,
+                        match_result,
+                    });
+                } else if query.is_empty() {
                     entries.push(FilteredListEntry {
                         section_index: s_idx,
                         item_index: i_idx,

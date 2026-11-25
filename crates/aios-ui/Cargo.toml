@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+aios-builtin = { workspace = true }
 aios-core = { workspace = true }
 aios-daemon = { workspace = true }
 aios-fuzzy = { workspace = true }

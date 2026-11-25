@@ -298,7 +298,7 @@ Every interactive component defines five explicit states: `default`, `hover`, `a
 
 - Left slot: Back button (`←`, `Esc` / `Backspace` when query empty) when navigation depth > 1; otherwise current view icon.
 - Center slot: Unbordered full-flex text input (`searchInput` 16px). When a selected command declares inline arguments, `Tab` activates crisp `4px`-radius argument pill inputs inline right next to the command badge.
-- Right slot: Optional `List.Dropdown` / `Grid.Dropdown` filter selector with chevron and `Ctrl+P` shortcut hint.
+- Right slot: Optional `List.Dropdown` / `Grid.Dropdown` filter selector with chevron and `Ctrl+F` shortcut hint.
 - Loading state: Thin `2px` deterministic/indeterminate horizontal progress bar running cleanly along the `1px` bottom divider of the header (zero layout shift, stops cleanly under reduced motion).
 
 ### 2. List Row (`List.Item`)
@@ -359,6 +359,7 @@ AIOS runs at **MOTION 1**:
   - `Left`/`Right`/`Up`/`Down`: Navigate `Grid` tiles.
   - `Enter`: Trigger Primary Action; `Ctrl+Enter`: Trigger Secondary Action.
   - `Ctrl+K`: Open/Close Action Panel.
+  - `Ctrl+F`: Open/Close Filter Dropdown.
   - `Tab` / `Shift+Tab`: Move between inline command arguments, form fields, and filter dropdown.
   - `Esc`: Close popover/modal first -> clear search query -> pop view stack -> hide launcher window.
 

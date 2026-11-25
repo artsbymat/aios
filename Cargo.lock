@@ -180,7 +180,11 @@ name = "aios-builtin"
 version = "0.1.0"
 dependencies = [
  "aios-core",
+ "aios-fuzzy",
  "aios-plugin-sdk",
+ "serde",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -233,6 +237,7 @@ dependencies = [
 name = "aios-ui"
 version = "0.1.0"
 dependencies = [
+ "aios-builtin",
  "aios-core",
  "aios-daemon",
  "aios-fuzzy",
