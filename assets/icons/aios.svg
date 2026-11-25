@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256"><title>AIOS logo</title><rect width="256" height="256" rx="57.6" fill="#131517"/><g transform="translate(24.83 24.83) scale(0.806)">
+  <title id="title">AIOS Symbol - Small Size Cut (16-24px)</title>
+  <g id="symbol">
+    <!-- Widened 24-unit channels and boosted focal circle (r=30) for crisp 16px pixel grid rendering -->
+    <circle cx="50" cy="50" r="30" fill="#E87143"/>
+    <path fill="#F1EFEA" d="M 108 20 H 212 A 24 24 0 0 1 236 44 V 76 A 4 4 0 0 1 232 80 H 108 A 4 4 0 0 1 104 76 V 24 A 4 4 0 0 1 108 20 Z"/>
+    <path fill="#F1EFEA" d="M 24 104 H 92 A 4 4 0 0 1 96 108 V 232 A 4 4 0 0 1 92 236 H 44 A 24 24 0 0 1 20 212 V 108 A 4 4 0 0 1 24 104 Z"/>
+    <path fill="#F1EFEA" d="M 124 104 H 232 A 4 4 0 0 1 236 108 V 212 A 24 24 0 0 1 212 236 H 124 A 4 4 0 0 1 120 232 V 108 A 4 4 0 0 1 124 104 Z"/>
+  </g>
+</g></svg>

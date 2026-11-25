@@ -173,7 +173,7 @@ Core principles that govern every screen:
 1. **Keyboard Speed Over Visual Noise**: Every view must present one unmistakable focal point (the active search input, the selected row/tile, or the active form field) with zero layout shift between keystrokes.
 2. **Dual-Mode Parity (Dark, Light, System)**: Light mode is a first-class warm alabaster surface, not an inverted afterthought. Dark mode is a deep mineral basalt surface, not pitch black. Both follow `org.freedesktop.portal.Settings` when set to System.
 3. **Strict Anti-Purple & Anti-Slop Discipline**: No purple, indigo, magenta, or blue-cyan AI gradients anywhere in the UI. Color is restrained to neutral mineral tones plus a single Signal Copper accent.
-4. **Honest Placeholders**: Until a final brand emblem is approved by the project owner, use `[LOGO PLACEHOLDER: AIOS]` or the plain `AIOS` wordmark in IBM Plex Sans SemiBold. Do not invent decorative mascot or sparkle icons.
+4. **Approved Brand Mark (`Modular Panes · Left Focus`)**: The official AIOS symbol combines a top-left Signal Copper focal circle (`#E87143` dark / `#B54116` light) with three Basalt/Alabaster modular Wayland panes (search bar + 40/60 split views), paired with the custom geometric outlined `AIOS` wordmark. Master files live in `assets/logo/` (see `assets/logo/BRAND_GUIDELINES.md`). Do not substitute stock sparkle or magnifying-glass icons.
 
 ---
 

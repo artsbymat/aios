@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 716 256" width="716" height="256" role="img" aria-labelledby="title">
+  <title id="title">AIOS Horizontal Lockup - Light Surface</title>
+  <g id="symbol">
+    <circle cx="52" cy="52" r="28" fill="#B54116"/>
+    <path fill="#181A1C" d="M 108 24 H 208 A 24 24 0 0 1 232 48 V 72 A 8 8 0 0 1 224 80 H 108 A 8 8 0 0 1 100 72 V 32 A 8 8 0 0 1 108 24 Z"/>
+    <path fill="#181A1C" d="M 32 100 H 92 A 8 8 0 0 1 100 108 V 224 A 8 8 0 0 1 92 232 H 48 A 24 24 0 0 1 24 208 V 108 A 8 8 0 0 1 32 100 Z"/>
+    <path fill="#181A1C" d="M 128 100 H 224 A 8 8 0 0 1 232 108 V 208 A 24 24 0 0 1 208 232 H 128 A 8 8 0 0 1 120 224 V 108 A 8 8 0 0 1 128 100 Z"/>
+  </g>
+  <g id="wordmark" fill="#181A1C">
+    <path fill-rule="evenodd" d="M 326 76 H 350 L 392 180 H 368 L 357 152 H 319 L 308 180 H 284 Z M 338 102 L 326 132 H 350 Z"/>
+    <rect x="416" y="76" width="22" height="104"/>
+    <path fill-rule="evenodd" d="M 521 73 A 55 55 0 1 1 520.9 73 Z M 521 95 A 33 33 0 1 0 521.1 95 Z"/>
+    <path d="M 692 74 H 629 A 27 27 0 0 0 602 101 V 111 A 27 27 0 0 0 629 138 H 665 A 7 7 0 0 1 672 145 V 155 A 7 7 0 0 1 665 162 H 602 V 182 H 665 A 27 27 0 0 0 692 155 V 145 A 27 27 0 0 0 665 118 H 629 A 7 7 0 0 1 622 111 V 101 A 7 7 0 0 1 629 94 H 692 Z"/>
+  </g>
+</svg>

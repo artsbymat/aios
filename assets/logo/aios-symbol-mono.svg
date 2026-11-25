@@ -1,0 +1,13 @@
+<svg fill="#ffffff" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title"><title>AIOS logo</title>
+  <title id="title">AIOS Symbol - Dark Surface Color</title>
+  <g id="symbol">
+    <!-- Top-left focal search node in Signal Copper (#E87143, 5.99:1 on Basalt) -->
+    <circle cx="52" cy="52" r="28" fill="#ffffff"/>
+    <!-- Top-right search bar module in Warm Off-White (#F1EFEA) -->
+    <path fill="#ffffff" d="M 108 24 H 208 A 24 24 0 0 1 232 48 V 72 A 8 8 0 0 1 224 80 H 108 A 8 8 0 0 1 100 72 V 32 A 8 8 0 0 1 108 24 Z"/>
+    <!-- Bottom-left list pane (40% width) -->
+    <path fill="#ffffff" d="M 32 100 H 92 A 8 8 0 0 1 100 108 V 224 A 8 8 0 0 1 92 232 H 48 A 24 24 0 0 1 24 208 V 108 A 8 8 0 0 1 32 100 Z"/>
+    <!-- Bottom-right detail/plugin pane (60% width) -->
+    <path fill="#ffffff" d="M 128 100 H 224 A 8 8 0 0 1 232 108 V 208 A 24 24 0 0 1 208 232 H 128 A 8 8 0 0 1 120 224 V 108 A 8 8 0 0 1 128 100 Z"/>
+  </g>
+</svg>
