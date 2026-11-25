@@ -63,7 +63,7 @@ aios/
 - Implement `MatchResult` returning both numeric score and exact matched character indices for UI highlighting.
 - Implement query parser and composite match engines: space (`AND`), `|` (`OR`), `'` (exact), `^` (prefix), `$` (suffix), `!` (inverse), smart-case matching.
 - Implement frecency ranker (exponential time decay + hit count + query-to-item affinity + pin boost).
-- Add parallel batch matcher with per-keystroke cancellation token and criterion benchmarks (target: < 5ms for 10,000 items, < 25ms for 100,000 items).
+- Add adaptive parallel execution engine (inspired by `instantMENU`'s parallel search/filter/render pipeline): `<= 1.5ms` inline fast path for small lists, automatic `rayon` background handoff for large corpora, progressive Top-K snapshot updates, latest-wins query replacement, atomic per-keystroke cancellation, and benchmarks (target: < 5ms for 10,000 items, < 25ms for 100,000 items).
 - **Exit Criteria**: Comprehensive unit test suite covering Unicode, camelCase, path boundaries, query operators, and benchmark suite passing.
 
 ### Phase 2: Wayland Shell, GPUI Core UI & Dual-Mode Theme Engine
@@ -119,7 +119,7 @@ aios/
 
 **Goal**: Deliver parity with Raycast's signature local-first productivity tools on Wayland.
 
-- **Clipboard History**: Background Wayland daemon (`ext-data-control-v1` / `zwlr_data_control_v1`) supporting text, code, links, images, files, and color swatches; split preview pane; pin/delete; sensitive-app exclusion list; copy/paste action.
+- **Clipboard History**: Pure Rust Wayland daemon (`ext-data-control-v1` / `zwlr_data_control_v1`) modeled on `Rolv-Apneseth/clipvault`'s storage & privacy design (byte-for-byte preservation, min/max entry size & age housekeeping, regex ignore patterns + sensitive-app window blacklist) supporting text, code, links, images, files, and color swatches; split preview pane; pin/delete; copy/paste action.
 - **File Search & Preview**: High-speed file walker + `aios-fuzzy` filtering, directory drill-down, preview pane (text/code/image/metadata), open/reveal/copy path/trash.
 - **Snippets**: Snippet manager (`List+Detail` + `Form` editor), dynamic placeholders (`{clipboard}`, `{date}`, `{time}`, `{cursor}`, `{argument}`), instant copy/paste from launcher, import/export JSON/TOML.
 - **Emoji & Symbols Picker**: `Grid` view for Unicode emoji, math/currency symbols, and Nerd Font glyphs with recent/frequent tracking and skin tone preference.

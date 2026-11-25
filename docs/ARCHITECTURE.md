@@ -142,7 +142,7 @@ If launched on another `wlr-layer-shell` compositor, the launcher UI still works
 
 ## 4. Wayland Platform Subsystems
 
-- **Clipboard Daemon**: Connects to Wayland display and binds `ext_data_control_manager_v1` (falling back to `zwlr_data_control_manager_v1`). Watches `selection` offers, deduplicates via BLAKE3 content hash, inspects MIME types (`text/plain;charset=utf-8`, `text/html`, `image/png`, `text/uri-list`), checks active window app-id against user exclusion list (e.g. `org.keepassxc.KeePassXC`, `bitwarden`), stores blobs on disk and metadata in SQLite.
+- **Clipboard Daemon**: Pure Rust Wayland clipboard backend inspired by `Rolv-Apneseth/clipvault`'s storage, privacy, and housekeeping architecture (while replacing external `wl-paste --watch` with a native Wayland client). Connects directly to Wayland display and binds `ext_data_control_manager_v1` (falling back to `zwlr_data_control_manager_v1`). Preserves payloads byte-for-byte (including leading/trailing whitespace and raw binary/images), deduplicates via BLAKE3 content hash, inspects MIME types (`text/plain;charset=utf-8`, `text/html`, `image/png`, `text/uri-list`), enforces configurable `min_entry_length`, `max_entry_size`, `max_entries`, and `max_entry_age` housekeeping limits, applies layered privacy filtering (both Hyprland/Niri active window/app-id blacklists like `org.keepassxc.KeePassXC` / `bitwarden` and configurable regex ignore patterns for sensitive content), and stores binary blobs on disk with metadata in SQLite WAL.
 - **Desktop Notifications**: D-Bus client for `org.freedesktop.Notifications` (used by Focus/Timer and background plugin alerts).
 - **Secrets Storage**: D-Bus client for `org.freedesktop.secrets` (Secret Service API) for plugin password preferences and future OAuth tokens, scoped per plugin ID.
 - **System Audio & Media**: PipeWire / PulseAudio control and MPRIS2 D-Bus (`org.mpris.MediaPlayer2.*`) for playback commands.
@@ -180,9 +180,9 @@ All state lives strictly on the local machine following XDG specifications:
 
 ## 6. Concurrency & Responsiveness Budget
 
-- **UI Thread (GPUI main loop)**: Strictly non-blocking. Never performs disk I/O, network requests, subprocess execution, or WASM calls directly.
+- **UI Thread (GPUI main loop)**: Strictly non-blocking. Never performs disk I/O, network requests, subprocess execution, or WASM calls directly. Runs only the `aios-fuzzy` inline fast path within a strict `<= 1.5ms` budget and renders the latest `SearchSnapshot` independently at monitor refresh rate.
 - **Async Runtime (Tokio multi-thread)**: Handles Unix socket IPC, D-Bus watchers, Hyprland/Niri event streams, HTTP requests (when granted to a plugin), and file walking.
-- **Compute Pool (`rayon` / dedicated worker threads)**: Runs `aios-fuzzy` parallel matching over large datasets and Wasmtime plugin execution with cancellation tokens and fuel limits.
+- **Compute Pool (`rayon` / dedicated worker threads)**: Runs `aios-fuzzy` parallel chunked matching with progressive Top-K snapshot streaming, latest-wins query replacement, and atomic keystroke cancellation (modeled on `instantMENU`'s parallel search/filter/render separation), alongside Wasmtime plugin execution with fuel limits.
 - **Performance Targets (to be verified with benchmarks in Phase 1 and Phase 6)**:
   - Toggle command to visible first frame: `< 16ms` (1 frame at 60Hz)
   - Root Search keystroke re-rank (up to 10k items): `< 5ms`

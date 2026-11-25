@@ -166,12 +166,30 @@ final_score = text_score + alias_boost + frecency_boost + pin_boost
 
 ---
 
-## 6. Concurrency, Cancellation & Memory Reuse
+## 6. Concurrency, Adaptive Parallel Execution & Progressive Results
 
-- **Scratch Buffer Reuse**: Each worker thread keeps a thread-local DP scratch buffer (`Vec<i32>`) so matching 50,000 items allocates zero per-item heap buffers on the hot path.
-- **Keystroke Cancellation**: Each search dispatch creates an `Arc<AtomicU64>` generation counter. Workers check the generation counter every 256 items and abort stale searches immediately when the user types the next character.
-- **Top-K Bounded Heap**: When matching large lists (e.g., File Search), workers retain only the top `K` (default `200`) highest-scoring items using a binary min-heap instead of sorting the entire corpus.
-- **Benchmark Targets**:
-  - Single item match: `< 1 microsecond` average
-  - 10,000 items parallel match: `< 5ms`
-  - 100,000 items parallel match: `< 25ms`
+Inspired by `instantMENU`'s parallel search/filter/render architecture (specifically its non-blocking parallel pipeline, without adopting X11 backends or `dmenu`-style `stdin` streaming), `aios-fuzzy` decouples matching from the GPUI render loop using a 3-stage concurrency model:
+
+### 6.1 Adaptive Inline Fast Path vs. Parallel Background Handoff
+
+- **Inline Time Budget**: When a query arrives, the session scores an initial window inline on the caller thread up to a strict time budget (default `1.5ms` or small corpora `<= 1,024` items). Small lists (Root Search apps, commands, quicklinks) finish synchronously in a single frame with zero thread-dispatch overhead and zero visual flicker.
+- **Automatic Parallel Handoff**: If items remain once the inline budget expires (e.g. File Search, large Clipboard History, or bulk plugin datasets), the session immediately returns the initial partial `SearchSnapshot` so the UI renders right away, and dispatches the remaining `Arc<[T]>` range to the background parallel pool (`rayon`).
+
+### 6.2 Progressive Chunked Snapshots (Search, Filter & Render in Parallel)
+
+- **Parallel Chunk Scoring**: Background workers split remaining items into work-stealing chunks and score them concurrently across CPU cores using thread-local DP scratch buffers (`Vec<i32>`), keeping per-item heap allocations at zero on the hot path.
+- **Bounded Top-K Min-Heap Merge**: Each chunk retains only its top `K` (default `200`) highest-scoring matches in a binary min-heap instead of sorting the entire corpus. After each macro-batch (e.g. `8,192` items or `~8ms`), results merge into the running global Top-K and emit a progressive `SearchSnapshot` (`generation`, `matches`, `total_matched`, `processed_items`, `total_items`, `is_complete`).
+- **Live UI Feedback**: While `is_complete == false`, the GPUI render thread stays responsive at 60-144Hz, displays the best matches discovered so far, activates the 2px header loading track, and indicates ongoing refinement in the match counter (e.g., `42...`).
+
+### 6.3 Latest-Wins Query Replacement & Atomic Cancellation
+
+- **Zero Keystroke Queueing**: Typing faster than a large corpus can be scored never queues stale searches. A new query bumps a monotonic `Arc<AtomicU64>` generation counter and replaces any pending query in a single latest-wins slot.
+- **Fine-Grained Cancellation**: Parallel workers poll the generation counter every `256` items and abort stale work immediately. Any in-flight snapshot with an older `generation` is dropped on the receiver side.
+- **Lock-Free Corpus Reads**: Corpora are shared via immutable `Arc<[T]>` snapshots so UI rendering and parallel worker threads never contend on a mutex during matching.
+
+### 6.4 Benchmark Targets
+
+- Single item match: `< 1 microsecond` average
+- 10,000 items parallel match: `< 5ms`
+- 100,000 items parallel match: `< 25ms`
+- Inline fast path handoff budget: `<= 1.5ms` max UI-thread time per keystroke
