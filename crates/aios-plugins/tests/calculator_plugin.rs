@@ -3,8 +3,10 @@ use std::sync::{Arc, Mutex};
 use aios_core::Database;
 use aios_plugin_sdk::{PluginEvent, PluginResponse, ViewNode};
 use aios_plugins::calculator::{
-    CALCULATOR_COMMAND_ID, CALCULATOR_PLUGIN_ID, CalcCategory, CalcOptions, CalculatorPlugin,
-    evaluate_expression, might_be_calculator_query,
+    CALCULATOR_COMMAND_ID, CALCULATOR_PLUGIN_ID, CalcCategory, CalcOptions, CachedCurrencyRates,
+    CalculatorPlugin, evaluate_expression, might_be_calculator_query, needs_currency_refresh,
+    parse_fawaz_currency_json, parse_open_er_api_json, parse_refresh_interval_secs,
+    save_cached_currency_rates,
 };
 use aios_plugins::{FirstPartyPlugin, PluginEnv};
 
@@ -262,4 +264,78 @@ fn calculator_plugin_inline_prefix_history_and_preferences_round_trip() {
         panic!("expected ListView");
     };
     assert!(cleared_list.sections.is_empty());
+}
+
+#[test]
+fn cached_currency_parsers_ttl_and_sqlite_round_trip() {
+    // 1. Refresh interval parser
+    assert_eq!(parse_refresh_interval_secs("off"), None);
+    assert_eq!(parse_refresh_interval_secs("0"), None);
+    assert_eq!(parse_refresh_interval_secs("disabled"), None);
+    assert_eq!(parse_refresh_interval_secs("6h"), Some(6 * 3600));
+    assert_eq!(parse_refresh_interval_secs("24h"), Some(24 * 3600));
+    assert_eq!(parse_refresh_interval_secs("3d"), Some(3 * 86_400));
+    assert_eq!(parse_refresh_interval_secs("1m"), Some(300)); // clamped to 5m min
+
+    // 2. Stale-While-Revalidate TTL checks
+    assert!(needs_currency_refresh(None, Some(86_400), 1_000_000));
+    assert!(!needs_currency_refresh(None, None, 1_000_000)); // disabled
+    assert!(!needs_currency_refresh(Some(990_000), Some(86_400), 1_000_000)); // fresh (10k < 86.4k)
+    assert!(needs_currency_refresh(Some(900_000), Some(86_400), 1_000_000)); // stale (100k >= 86.4k)
+
+    // 3. Primary fawazahmed0/currency-api parser (fiat + crypto)
+    let fawaz_json = r#"{
+        "date": "2026-11-26",
+        "usd": {
+            "usd": 1,
+            "idr": 16543.25,
+            "eur": 0.91,
+            "gbp": 0.78,
+            "jpy": 152.5,
+            "sgd": 1.33,
+            "btc": 0.0000102,
+            "eth": 0.00029
+        }
+    }"#;
+    let (f_date, f_rates) = parse_fawaz_currency_json(fawaz_json).expect("parse fawaz");
+    assert_eq!(f_date, "2026-11-26");
+    assert_eq!(f_rates.get("IDR"), Some(&16_543.25));
+    assert_eq!(f_rates.get("BTC"), Some(&0.000_010_2));
+
+    // 4. Fallback open.er-api.com parser
+    let open_er_json = r#"{
+        "result": "success",
+        "time_last_update_unix": 1795651200,
+        "rates": {
+            "USD": 1,
+            "IDR": 16600.0,
+            "EUR": 0.90,
+            "GBP": 0.77,
+            "JPY": 151.0,
+            "SGD": 1.32
+        }
+    }"#;
+    let (e_date, e_rates) = parse_open_er_api_json(open_er_json).expect("parse open.er-api");
+    assert_eq!(e_date, "2026-11-26");
+    assert_eq!(e_rates.get("IDR"), Some(&16_600.0));
+
+    // 5. SQLite CachedCurrencyRates persistence flows cleanly into live Calculator results
+    let db = Arc::new(Mutex::new(
+        Database::open_in_memory().expect("in-memory sqlite"),
+    ));
+    let snapshot = CachedCurrencyRates {
+        updated_at: 1_795_651_200,
+        date_label: f_date,
+        source: "fawazahmed0/currency-api".to_string(),
+        rates: f_rates,
+    };
+    save_cached_currency_rates(&db, &snapshot).expect("save cached rates");
+
+    let plugin = CalculatorPlugin::new();
+    let env = PluginEnv::new(CALCULATOR_PLUGIN_ID, "dark", Arc::clone(&db));
+    let inline = plugin
+        .evaluate_inline_query("100 usd to idr", &env)
+        .expect("cached live rate evaluation");
+    assert_eq!(inline.copy_value, "1654325");
+    assert!(inline.subtitle.contains("cached 2026-11-26"));
 }

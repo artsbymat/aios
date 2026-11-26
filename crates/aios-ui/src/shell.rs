@@ -770,6 +770,71 @@ impl LauncherWindow {
             }
         }
 
+        if action_id == aios_plugin_host::CALCULATOR_REFRESH_RATES_ACTION {
+            self.state.show_toast(
+                ToastStyle::Animated,
+                "Refreshing exchange rates...",
+                Some("Fetching latest rates in background".to_string()),
+            );
+            cx.notify();
+            let db = self.plugin_host.borrow().db_arc();
+            cx.spawn(async move |this, cx| {
+                let res = cx
+                    .background_executor()
+                    .spawn(async move { aios_plugin_host::refresh_currency_rates_now(&db) })
+                    .await;
+                let _ = this.update(cx, |win, cx| {
+                    match res {
+                        Ok(cached) => {
+                            win.state.show_toast(
+                                ToastStyle::Success,
+                                format!("Exchange rates updated ({})", cached.date_label),
+                                Some(format!(
+                                    "{} currencies from {}",
+                                    cached.rates.len(),
+                                    cached.source
+                                )),
+                            );
+                            if win.state.current().id == "root.search" {
+                                win.refresh_root_search();
+                            } else if let Some((pid, cid)) =
+                                win.state.current().plugin_session.clone()
+                                && pid == "com.aios.calculator"
+                            {
+                                let query = win.state.current().search_query.clone();
+                                let event = PluginEvent::SearchTextChanged {
+                                    command_id: cid.clone(),
+                                    query,
+                                };
+                                let theme_mode = active_theme_name(cx);
+                                let host_res = win.plugin_host.borrow_mut().send_wasm_event(
+                                    &pid,
+                                    &cid,
+                                    &event,
+                                    theme_mode,
+                                );
+                                if let PluginResponse::Render { view } = host_res.response {
+                                    let frame = win.state.current_mut();
+                                    frame.view = *view;
+                                    frame.clamp_selection();
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            win.state.show_toast(
+                                ToastStyle::Failure,
+                                "Exchange rate refresh failed",
+                                Some(format!("Keeping cached offline rates: {err}")),
+                            );
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
+
         // 1b. Handle WASM Plugin Host (`plugin.*`, `settings.*`, `core.open-settings`).
         let is_plugin_host_action = action_id.starts_with("plugin.")
             || action_id.starts_with("settings.")

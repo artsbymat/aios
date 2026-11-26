@@ -10,8 +10,11 @@
 //! - Sub-microsecond host fast-gate + optional `=` exclusive prefix + SQLite calculation history
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use aios_core::Database;
 use aios_core::view::FilterMode;
 use aios_plugin_sdk::{
     ActionItem, ActionPanel, ActionPanelBuilder, CommandMode, CommandSpec, DefaultViewKind,
@@ -25,9 +28,32 @@ use crate::{FirstPartyPlugin, InlinePluginResult, PluginEnv, now_epoch_secs};
 pub const CALCULATOR_PLUGIN_ID: &str = "com.aios.calculator";
 pub const CALCULATOR_COMMAND_ID: &str = "calculator";
 pub const CALCULATOR_ICON_ASSET: &str = "asset://icons/plugins/calculator.svg";
+pub const CALCULATOR_REFRESH_RATES_ACTION: &str = "plugin.calc.refresh-rates";
 const HISTORY_STORAGE_KEY: &str = "history_v1";
-const CUSTOM_RATES_STORAGE_KEY: &str = "currency_rates_v1";
+pub const CUSTOM_RATES_STORAGE_KEY: &str = "currency_rates_v1";
 const MAX_HISTORY_ENTRIES: usize = 50;
+const DEFAULT_CURRENCY_REFRESH_SECS: u64 = 24 * 3600;
+const MIN_CURRENCY_REFRESH_SECS: u64 = 300;
+const FAILURE_RETRY_COOLDOWN_SECS: i64 = 600;
+const HTTP_TIMEOUT_SECS: u64 = 5;
+
+const FAWAZ_JSDELIVR_URL: &str =
+    "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json";
+const FAWAZ_PAGES_FALLBACK_URL: &str =
+    "https://latest.currency-api.pages.dev/v1/currencies/usd.json";
+const OPEN_ER_API_URL: &str = "https://open.er-api.com/v6/latest/USD";
+
+static FX_FETCH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static FX_LAST_ATTEMPT_SECS: AtomicI64 = AtomicI64::new(0);
+
+/// Persisted offline-first exchange rate snapshot stored in SQLite (`currency_rates_v1`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CachedCurrencyRates {
+    pub updated_at: i64,
+    pub date_label: String,
+    pub source: String,
+    pub rates: HashMap<String, f64>,
+}
 
 /// User-configurable calculator settings loaded from SQLite plugin preferences.
 #[derive(Debug, Clone)]
@@ -36,6 +62,10 @@ pub struct CalcOptions {
     pub decimal_places: usize,
     pub default_currency: String,
     pub custom_rates_usd: HashMap<String, f64>,
+    pub rates_updated_at: Option<i64>,
+    pub rates_date_label: Option<String>,
+    pub rates_source: Option<String>,
+    pub refresh_interval_secs: Option<u64>,
 }
 
 impl Default for CalcOptions {
@@ -45,6 +75,10 @@ impl Default for CalcOptions {
             decimal_places: 6,
             default_currency: "IDR".to_string(),
             custom_rates_usd: HashMap::new(),
+            rates_updated_at: None,
+            rates_date_label: None,
+            rates_source: None,
+            refresh_interval_secs: Some(DEFAULT_CURRENCY_REFRESH_SECS),
         }
     }
 }
@@ -63,18 +97,327 @@ impl CalcOptions {
         {
             opts.decimal_places = v.min(12);
         }
+        if let Some(cached) = load_cached_currency_rates(env) {
+            opts.custom_rates_usd = cached.rates;
+            opts.rates_updated_at = Some(cached.updated_at);
+            opts.rates_date_label = Some(cached.date_label);
+            opts.rates_source = Some(cached.source);
+        }
         if let Some(raw) = env.preference("default_currency") {
             let trimmed = raw.trim().to_ascii_uppercase();
             if lookup_currency_rate(&trimmed, &opts.custom_rates_usd).is_some() {
                 opts.default_currency = trimmed;
             }
         }
-        if let Some(raw_bytes) = env.storage_get(CUSTOM_RATES_STORAGE_KEY)
-            && let Ok(rates) = serde_json::from_slice::<HashMap<String, f64>>(&raw_bytes)
-        {
-            opts.custom_rates_usd = rates;
+        if let Some(raw) = env.preference("currency_refresh_interval") {
+            opts.refresh_interval_secs = parse_refresh_interval_secs(&raw);
         }
         opts
+    }
+}
+
+/// Parses `currency_refresh_interval` values (`off`/`0`, `6h`, `12h`, `24h`, `3d`, `7d`, `<N>m`).
+/// Returns `None` when disabled (`off`/`0`), or `Some(secs)` clamped to at least 5 minutes.
+#[must_use]
+pub fn parse_refresh_interval_secs(raw: &str) -> Option<u64> {
+    let s = raw.trim().to_ascii_lowercase();
+    if s.is_empty() {
+        return Some(DEFAULT_CURRENCY_REFRESH_SECS);
+    }
+    if matches!(s.as_str(), "off" | "0" | "none" | "disabled" | "never") {
+        return None;
+    }
+    let (num_part, mult) = if let Some(n) = s.strip_suffix('d') {
+        (n, 86_400u64)
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 3_600u64)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60u64)
+    } else if let Some(n) = s.strip_suffix('s') {
+        (n, 1u64)
+    } else {
+        // Plain number interpreted as hours for ergonomic settings input.
+        (s.as_str(), 3_600u64)
+    };
+    let n = num_part.trim().parse::<u64>().ok()?;
+    if n == 0 {
+        return None;
+    }
+    Some(n.saturating_mul(mult).max(MIN_CURRENCY_REFRESH_SECS))
+}
+
+/// Returns `true` when cached currency rates are absent or older than `ttl_secs`.
+#[must_use]
+pub fn needs_currency_refresh(
+    cached_updated_at: Option<i64>,
+    ttl_secs: Option<u64>,
+    now_secs: i64,
+) -> bool {
+    let Some(ttl) = ttl_secs else {
+        return false;
+    };
+    let Some(updated_at) = cached_updated_at else {
+        return true;
+    };
+    now_secs.saturating_sub(updated_at) >= i64::try_from(ttl).unwrap_or(i64::MAX)
+}
+
+/// Loads cached live exchange rates from SQLite (compatible with legacy raw `HashMap` format).
+#[must_use]
+pub fn load_cached_currency_rates(env: &PluginEnv<'_>) -> Option<CachedCurrencyRates> {
+    let raw_bytes = env.storage_get(CUSTOM_RATES_STORAGE_KEY)?;
+    if let Ok(cached) = serde_json::from_slice::<CachedCurrencyRates>(&raw_bytes)
+        && !cached.rates.is_empty()
+    {
+        return Some(cached);
+    }
+    if let Ok(rates) = serde_json::from_slice::<HashMap<String, f64>>(&raw_bytes)
+        && !rates.is_empty()
+    {
+        return Some(CachedCurrencyRates {
+            updated_at: now_epoch_secs(),
+            date_label: "custom".to_string(),
+            source: "Custom SQLite rates".to_string(),
+            rates,
+        });
+    }
+    None
+}
+
+/// Persists a `CachedCurrencyRates` snapshot to SQLite plugin storage.
+pub fn save_cached_currency_rates(
+    db: &Arc<Mutex<Database>>,
+    cached: &CachedCurrencyRates,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec(cached).map_err(|e| e.to_string())?;
+    let guard = db
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?;
+    guard
+        .plugin_storage_set(
+            CALCULATOR_PLUGIN_ID,
+            CUSTOM_RATES_STORAGE_KEY,
+            &bytes,
+            cached.updated_at,
+        )
+        .map_err(|e| e.to_string())
+}
+
+/// Parses `@fawazahmed0/currency-api` `usd.json` (`{"date": "YYYY-MM-DD", "usd": {"idr": ...}}`).
+pub fn parse_fawaz_currency_json(body: &str) -> Result<(String, HashMap<String, f64>), String> {
+    let root: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("invalid JSON: {e}"))?;
+    let date_label = root
+        .get("date")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("latest")
+        .to_string();
+    let usd_map = root
+        .get("usd")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "missing 'usd' rates object".to_string())?;
+
+    let mut rates = HashMap::new();
+    for &(sym, _, _) in OFFLINE_USD_RATES {
+        let key = sym.to_ascii_lowercase();
+        if let Some(val) = usd_map.get(&key).and_then(serde_json::Value::as_f64)
+            && val.is_finite()
+            && val > 0.0
+        {
+            rates.insert(sym.to_string(), val);
+        }
+    }
+    rates.insert("USD".to_string(), 1.0);
+    if rates.len() < 5 {
+        return Err("currency payload contained too few valid rates".to_string());
+    }
+    Ok((date_label, rates))
+}
+
+/// Parses `open.er-api.com/v6/latest/USD` (`{"result": "success", "rates": {"IDR": ...}}`).
+pub fn parse_open_er_api_json(body: &str) -> Result<(String, HashMap<String, f64>), String> {
+    let root: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("invalid JSON: {e}"))?;
+    if let Some(res) = root.get("result").and_then(serde_json::Value::as_str)
+        && !res.eq_ignore_ascii_case("success")
+    {
+        return Err(format!("open.er-api returned status '{res}'"));
+    }
+    let rates_obj = root
+        .get("rates")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "missing 'rates' object".to_string())?;
+
+    let date_label = root
+        .get("time_last_update_unix")
+        .and_then(serde_json::Value::as_i64)
+        .map(|ts| {
+            let (y, m, d) = civil_from_days(ts.div_euclid(86_400));
+            format!("{y:04}-{m:02}-{d:02}")
+        })
+        .unwrap_or_else(|| {
+            let (y, m, d) = civil_from_days(today_days_utc());
+            format!("{y:04}-{m:02}-{d:02}")
+        });
+
+    let mut rates = HashMap::new();
+    for &(sym, _, _) in OFFLINE_USD_RATES {
+        if let Some(val) = rates_obj.get(sym).and_then(serde_json::Value::as_f64)
+            && val.is_finite()
+            && val > 0.0
+        {
+            rates.insert(sym.to_string(), val);
+        }
+    }
+    rates.insert("USD".to_string(), 1.0);
+    if rates.len() < 5 {
+        return Err("open.er-api payload contained too few valid rates".to_string());
+    }
+    Ok((date_label, rates))
+}
+
+/// Fetches the latest USD-based exchange rates using primary CDN (`fawazahmed0/currency-api`,
+/// covering 26 fiat + crypto currencies) with automatic fallback to `pages.dev` and `open.er-api.com`.
+pub fn fetch_latest_currency_rates() -> Result<CachedCurrencyRates, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .user_agent("aios-calculator/0.1")
+        .build();
+    let now = now_epoch_secs();
+    let mut errors = Vec::new();
+
+    for (url, source) in [
+        (FAWAZ_JSDELIVR_URL, "fawazahmed0/currency-api"),
+        (FAWAZ_PAGES_FALLBACK_URL, "fawazahmed0/currency-api"),
+    ] {
+        match agent.get(url).call() {
+            Ok(resp) => match resp.into_string() {
+                Ok(body) => match parse_fawaz_currency_json(&body) {
+                    Ok((date_label, rates)) => {
+                        return Ok(CachedCurrencyRates {
+                            updated_at: now,
+                            date_label,
+                            source: source.to_string(),
+                            rates,
+                        });
+                    }
+                    Err(e) => errors.push(format!("{url}: {e}")),
+                },
+                Err(e) => errors.push(format!("{url}: read failed: {e}")),
+            },
+            Err(e) => errors.push(format!("{url}: {e}")),
+        }
+    }
+
+    match agent.get(OPEN_ER_API_URL).call() {
+        Ok(resp) => match resp.into_string() {
+            Ok(body) => {
+                let (date_label, rates) = parse_open_er_api_json(&body)?;
+                return Ok(CachedCurrencyRates {
+                    updated_at: now,
+                    date_label,
+                    source: "open.er-api.com".to_string(),
+                    rates,
+                });
+            }
+            Err(e) => errors.push(format!("{OPEN_ER_API_URL}: read failed: {e}")),
+        },
+        Err(e) => errors.push(format!("{OPEN_ER_API_URL}: {e}")),
+    }
+
+    Err(errors
+        .into_iter()
+        .last()
+        .unwrap_or_else(|| "network unavailable".to_string()))
+}
+
+/// Immediately fetches and persists fresh exchange rates (used by manual "Refresh Exchange Rates Now"
+/// off the UI thread). Preserves any existing crypto rates when falling back to fiat-only `open.er-api`.
+pub fn refresh_currency_rates_now(db: &Arc<Mutex<Database>>) -> Result<CachedCurrencyRates, String> {
+    let mut fetched = fetch_latest_currency_rates()?;
+    // If fallback provider lacked crypto (BTC/ETH), keep previously cached values for missing codes.
+    if let Ok(guard) = db.lock()
+        && let Ok(Some(raw)) = guard.plugin_storage_get(CALCULATOR_PLUGIN_ID, CUSTOM_RATES_STORAGE_KEY)
+        && let Ok(prev) = serde_json::from_slice::<CachedCurrencyRates>(&raw)
+    {
+        for (k, v) in prev.rates {
+            fetched.rates.entry(k).or_insert(v);
+        }
+    }
+    save_cached_currency_rates(db, &fetched)?;
+    Ok(fetched)
+}
+
+struct InFlightGuard;
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        FX_FETCH_IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
+
+/// Non-blocking Stale-While-Revalidate background refresh: checks SQLite cache TTL and failure
+/// cooldown, then spawns at most one short-lived thread to refresh cached rates without blocking UI.
+pub fn maybe_schedule_stale_currency_refresh(db: &Arc<Mutex<Database>>) {
+    if cfg!(test) {
+        return;
+    }
+    let env = PluginEnv::new(CALCULATOR_PLUGIN_ID, "system", Arc::clone(db));
+    let opts = CalcOptions::from_env(&env);
+    let now = now_epoch_secs();
+    if !needs_currency_refresh(opts.rates_updated_at, opts.refresh_interval_secs, now) {
+        return;
+    }
+    let last_attempt = FX_LAST_ATTEMPT_SECS.load(Ordering::Acquire);
+    if last_attempt > 0 && now.saturating_sub(last_attempt) < FAILURE_RETRY_COOLDOWN_SECS {
+        return;
+    }
+    if FX_FETCH_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    FX_LAST_ATTEMPT_SECS.store(now, Ordering::Release);
+
+    let db_clone = Arc::clone(db);
+    let spawn_res = std::thread::Builder::new()
+        .name("aios-calc-fx".to_string())
+        .spawn(move || {
+            let _guard = InFlightGuard;
+            match refresh_currency_rates_now(&db_clone) {
+                Ok(cached) => {
+                    tracing::info!(
+                        source = %cached.source,
+                        date = %cached.date_label,
+                        currencies = cached.rates.len(),
+                        "refreshed cached calculator exchange rates"
+                    );
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        error = %err,
+                        "background exchange rate refresh skipped (offline or unreachable); keeping cached rates"
+                    );
+                }
+            }
+        });
+    if spawn_res.is_err() {
+        FX_FETCH_IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
+
+fn format_relative_age(age_secs: i64) -> String {
+    let secs = age_secs.max(0);
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3_600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3_600)
+    } else {
+        format!("{}d ago", secs / 86_400)
     }
 }
 
@@ -196,6 +539,9 @@ impl CalculatorPlugin {
         let history = Self::load_history(env);
         let trimmed = query.trim();
         let cleaned = trimmed.strip_prefix('=').map(str::trim).unwrap_or(trimmed);
+        if cleaned.is_empty() {
+            maybe_schedule_stale_currency_refresh(&env.db_arc());
+        }
 
         let mut builder = ListViewBuilder::new("Calculator & Converter")
             .placeholder("Type expression (e.g. 24 * 12, 0xff to bin, 100 cm to in, 50 usd to idr, today + 14d)...")
@@ -264,6 +610,10 @@ impl CalculatorPlugin {
                                 .section(
                                     Some("Calculator"),
                                     vec![
+                                        ActionItem::new(
+                                            CALCULATOR_REFRESH_RATES_ACTION,
+                                            "Refresh Exchange Rates Now",
+                                        ),
                                         ActionItem::new("calc.clear-history", "Clear History"),
                                         ActionItem::new("nav.pop", "Back to Root").shortcut("Esc"),
                                     ],
@@ -349,6 +699,10 @@ impl CalculatorPlugin {
                                             format!("calc.delete:{}", rec.id),
                                             "Remove Entry",
                                         ),
+                                        ActionItem::new(
+                                            CALCULATOR_REFRESH_RATES_ACTION,
+                                            "Refresh Exchange Rates Now",
+                                        ),
                                         ActionItem::new("calc.clear-history", "Clear All History"),
                                     ],
                                 )
@@ -370,6 +724,10 @@ impl CalculatorPlugin {
                 ),
                 icon: Some("=".to_string()),
                 actions: ActionPanel::from_actions(vec![
+                    ActionItem::new(
+                        CALCULATOR_REFRESH_RATES_ACTION,
+                        "Refresh Exchange Rates Now",
+                    ),
                     ActionItem::new("nav.pop", "Back to Root").shortcut("Esc"),
                 ]),
             })
@@ -417,6 +775,15 @@ impl FirstPartyPlugin for CalculatorPlugin {
                     description: Some("Target currency when converting bare symbol amounts like $50 (default: IDR).".to_string()),
                     kind: PreferenceKind::Textfield,
                     default: Some("IDR".to_string()),
+                    required: false,
+                    options: Vec::new(),
+                },
+                PreferenceSpec {
+                    name: "currency_refresh_interval".to_string(),
+                    title: "Exchange Rate Auto-Refresh".to_string(),
+                    description: Some("Offline-first cache TTL before background refresh (off, 6h, 12h, 24h, 3d, 7d; default: 24h).".to_string()),
+                    kind: PreferenceKind::Textfield,
+                    default: Some("24h".to_string()),
                     required: false,
                     options: Vec::new(),
                 },
@@ -554,6 +921,9 @@ impl FirstPartyPlugin for CalculatorPlugin {
 
         let opts = CalcOptions::from_env(env);
         let eval = evaluate_expression(expr, &opts).ok()?;
+        if eval.category == CalcCategory::Currency {
+            maybe_schedule_stale_currency_refresh(&env.db_arc());
+        }
 
         // Avoid noisy inline cards for trivial bare numbers like "42" unless explicit `=` prefix was used.
         if !exclusive
@@ -1131,6 +1501,33 @@ fn lookup_currency_rate(code: &str, custom: &HashMap<String, f64>) -> Option<(&'
     None
 }
 
+fn currency_source_metadata(
+    src_sym: &str,
+    dst_sym: &str,
+    unit_rate: f64,
+    opts: &CalcOptions,
+) -> (String, Vec<(String, String)>) {
+    let mut notes = vec![(
+        "Rate".to_string(),
+        format!("1 {src_sym} = {} {dst_sym}", format_number(unit_rate, 4)),
+    )];
+    if let (Some(source), Some(date_label)) = (&opts.rates_source, &opts.rates_date_label) {
+        let subtitle = format!("{src_sym} -> {dst_sym} (cached {date_label})");
+        notes.push(("Source".to_string(), format!("{source} ({date_label})")));
+        if let Some(updated_at) = opts.rates_updated_at {
+            notes.push((
+                "Updated".to_string(),
+                format_relative_age(now_epoch_secs().saturating_sub(updated_at)),
+            ));
+        }
+        (subtitle, notes)
+    } else {
+        let subtitle = format!("{src_sym} -> {dst_sym} (offline fallback)");
+        notes.push(("Source".to_string(), "Built-in offline fallback".to_string()));
+        (subtitle, notes)
+    }
+}
+
 fn try_evaluate_currency(expr: &str, opts: &CalcOptions) -> Option<CalcEvaluation> {
     let lower = expr.to_ascii_lowercase();
 
@@ -1145,20 +1542,15 @@ fn try_evaluate_currency(expr: &str, opts: &CalcOptions) -> Option<CalcEvaluatio
         let formatted = format!("{formatted_num} {dst_sym}");
         let copy_value = format_number(result, dst_decs);
         let unit_rate = dst_rate / src_rate;
+        let (detail_subtitle, notes) = currency_source_metadata(src_sym, dst_sym, unit_rate, opts);
 
         return Some(CalcEvaluation {
             expression: expr.to_string(),
             formatted,
             copy_value,
             category: CalcCategory::Currency,
-            detail_subtitle: format!("{src_sym} -> {dst_sym} (offline rate)"),
-            notes: vec![
-                (
-                    "Rate".to_string(),
-                    format!("1 {src_sym} = {} {dst_sym}", format_number(unit_rate, 4)),
-                ),
-                ("Source".to_string(), "Offline reference table".to_string()),
-            ],
+            detail_subtitle,
+            notes,
         });
     }
 
@@ -1175,19 +1567,15 @@ fn try_evaluate_currency(expr: &str, opts: &CalcOptions) -> Option<CalcEvaluatio
         let formatted_num = format_grouped_currency(result, dst_decs);
         let formatted = format!("{formatted_num} {dst_sym}");
         let copy_value = format_number(result, dst_decs);
+        let unit_rate = dst_rate / src_rate;
+        let (detail_subtitle, notes) = currency_source_metadata(src_sym, dst_sym, unit_rate, opts);
         return Some(CalcEvaluation {
             expression: expr.to_string(),
             formatted,
             copy_value,
             category: CalcCategory::Currency,
-            detail_subtitle: format!("{src_sym} -> {dst_sym} (offline rate)"),
-            notes: vec![(
-                "Rate".to_string(),
-                format!(
-                    "1 {src_sym} = {} {dst_sym}",
-                    format_number(dst_rate / src_rate, 4)
-                ),
-            )],
+            detail_subtitle,
+            notes,
         });
     }
 

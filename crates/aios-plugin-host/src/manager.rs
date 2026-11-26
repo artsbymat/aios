@@ -92,7 +92,14 @@ impl PluginHost {
             menu_bar_states: HashMap::new(),
         };
         host.reload_all();
+        aios_plugins::calculator::maybe_schedule_stale_currency_refresh(&host.db);
         Ok(host)
+    }
+
+    /// Returns a cloned handle to the shared SQLite database for non-blocking host tasks.
+    #[must_use]
+    pub fn db_arc(&self) -> Arc<Mutex<Database>> {
+        Arc::clone(&self.db)
     }
 
     /// Re-scans `$XDG_DATA_HOME/aios/plugins/`.

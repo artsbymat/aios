@@ -13,6 +13,10 @@ pub mod watcher;
 use aios_plugin_sdk::PluginManifest;
 use serde::{Deserialize, Serialize};
 
+pub use aios_plugins::calculator::{
+    CALCULATOR_REFRESH_RATES_ACTION, CachedCurrencyRates, maybe_schedule_stale_currency_refresh,
+    refresh_currency_rates_now,
+};
 pub use aios_plugins::{FirstPartyPlugin, InlinePluginResult, PluginEnv};
 pub use manager::{HostActionResult, PluginHost, RootPluginEntry};
 pub use manifest::{

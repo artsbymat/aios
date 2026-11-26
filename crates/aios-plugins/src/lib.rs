@@ -84,6 +84,12 @@ impl<'a> PluginEnv<'a> {
         let db = self.db.lock().ok()?;
         db.get_plugin_preference(self.plugin_id, name).ok().flatten()
     }
+
+    /// Returns a cloned handle to the shared SQLite database for non-blocking background updates.
+    #[must_use]
+    pub fn db_arc(&self) -> Arc<Mutex<Database>> {
+        Arc::clone(&self.db)
+    }
 }
 
 /// Contract implemented by all first-party AIOS plugins, matching the WASM plugin lifecycle.

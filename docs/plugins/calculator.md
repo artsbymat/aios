@@ -94,11 +94,18 @@ The amount and unit may be space-separated (`100 cm to in`), attached (`24px to 
 
 ---
 
-### 2.4 Offline Currency Converter
+### 2.4 Offline-First Currency Converter (Cached Live Rates)
 
-Supports **26 built-in currencies** backed by an offline USD reference rate table (100% local, no internet API calls):
+Supports **26 built-in currencies** using an **offline-first Stale-While-Revalidate** cache stored in SQLite (`currency_rates_v1`):
 
 `USD`, `IDR`, `EUR`, `GBP`, `JPY`, `SGD`, `MYR`, `AUD`, `CAD`, `CHF`, `CNY`, `KRW`, `HKD`, `INR`, `THB`, `VND`, `PHP`, `NZD`, `SEK`, `NOK`, `BRL`, `MXN`, `AED`, `SAR`, `BTC`, `ETH`.
+
+- **Zero-blocking evaluation**: Every currency query reads directly from the local SQLite cache (or the built-in fallback table if never fetched yet) with zero network delay.
+- **Automatic background refresh**: When cached rates are missing or older than `currency_refresh_interval` (default `24h`), AIOS fetches fresh rates once on a short-lived background thread (5s timeout, 10m retry cooldown when offline) using keyless public endpoints:
+  1. Primary CDN (fiat + crypto): `fawazahmed0/currency-api` (`cdn.jsdelivr.net` + `pages.dev` mirror)
+  2. Fallback (fiat): `open.er-api.com/v6/latest/USD`
+- **Manual refresh**: Press `Ctrl+K` inside Calculator and run **Refresh Exchange Rates Now** to update immediately off the UI thread.
+- **Strict air-gapped mode**: Set `currency_refresh_interval` to `off` (or `0`) in Settings to disable background network requests permanently.
 
 | Mode                     | Examples                                                    | Behavior                                                     |
 | ------------------------ | ----------------------------------------------------------- | ------------------------------------------------------------ |
@@ -106,7 +113,7 @@ Supports **26 built-in currencies** backed by an offline USD reference rate tabl
 | Symbol + explicit target | `$49.99 to idr`, `€20 in usd`, `£15 -> eur`, `¥5000 to idr` | Supports `$` (USD), `€` (EUR), `£` (GBP), `¥` (JPY)          |
 | Bare currency symbol     | `$49.99`, `€20`, `£10`, `¥5000`                             | Automatically converts to `default_currency` (default `IDR`) |
 
-> Display output includes thousand separators for readability (for example `1,620,000 IDR`), while the clipboard **Copy Value** is a clean unformatted number ready to paste into spreadsheets or forms. The Split Detail pane displays the reference rate used.
+> Display output includes thousand separators for readability (for example `1,620,000 IDR`), while the clipboard **Copy Value** is a clean unformatted number ready to paste into spreadsheets or forms. The Split Detail pane displays the exact rate, source, date, and relative cache age.
 
 ---
 
@@ -189,7 +196,8 @@ Open **Settings & Plugins** (`aios://settings`) -> **First-Party Plugins** -> **
 | ------------------ | ----------------------- | ------- | ------------------------------------------------------------------------------------------------------------- |
 | `base_font_px`     | CSS Base Font Size (px) | `16`    | Range `4` to `128`, used for `px <-> rem/em` conversions.                                                     |
 | `decimal_places`   | Max Decimal Places      | `6`     | Range `0` to `12`, maximum fractional digits for floating-point results.                                      |
-| `default_currency` | Default Currency        | `IDR`   | 3-letter target currency code used when entering bare symbol amounts such as `$50`, `€20`, `£10`, or `¥5000`. |
+| `default_currency`          | Default Currency           | `IDR`   | 3-letter target currency code used when entering bare symbol amounts such as `$50`, `€20`, `£10`, or `¥5000`. |
+| `currency_refresh_interval` | Exchange Rate Auto-Refresh | `24h`   | Cache TTL before non-blocking background refresh (`off`/`0`, `6h`, `12h`, `24h`, `3d`, `7d`).                 |
 
 ---
 
