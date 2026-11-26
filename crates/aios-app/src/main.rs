@@ -293,7 +293,11 @@ fn run_script_cli(action: ScriptCliCommand) -> Result<()> {
                 eprint!("{}", outcome.stderr);
             }
             if outcome.timed_out {
-                bail!("script '{}' timed out after {}ms", script.title, outcome.duration_ms);
+                bail!(
+                    "script '{}' timed out after {}ms",
+                    script.title,
+                    outcome.duration_ms
+                );
             }
             match outcome.exit_code {
                 Some(0) => Ok(()),

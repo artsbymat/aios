@@ -101,7 +101,9 @@ pub enum PluginResponse {
     /// Publishes an updated status item for a `MenuBar` command (Waybar / SNI bridge).
     MenuBar { state: MenuBarState },
     /// Response to [`PluginEvent::InlineQuery`] for live Root Search previews.
-    InlineResult { result: Option<Box<InlinePluginResult>> },
+    InlineResult {
+        result: Option<Box<InlinePluginResult>>,
+    },
     /// Explicit no-op response (useful for `no-view` commands that already triggered host APIs).
     Noop,
 }

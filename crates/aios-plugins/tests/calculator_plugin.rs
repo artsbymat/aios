@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use aios_core::Database;
 use aios_plugin_sdk::{PluginEvent, PluginResponse, ViewNode};
 use aios_plugins::calculator::{
-    CALCULATOR_COMMAND_ID, CALCULATOR_PLUGIN_ID, CalcCategory, CalcOptions, CachedCurrencyRates,
+    CALCULATOR_COMMAND_ID, CALCULATOR_PLUGIN_ID, CachedCurrencyRates, CalcCategory, CalcOptions,
     CalculatorPlugin, evaluate_expression, might_be_calculator_query, needs_currency_refresh,
     parse_fawaz_currency_json, parse_open_er_api_json, parse_refresh_interval_secs,
     save_cached_currency_rates,
@@ -12,7 +12,15 @@ use aios_plugins::{FirstPartyPlugin, PluginEnv};
 
 #[test]
 fn fast_gate_rejects_normal_app_queries_and_accepts_calc_patterns() {
-    for app_query in ["firefox", "code", "terminal", "settings", "disk usage", "notes", ""] {
+    for app_query in [
+        "firefox",
+        "code",
+        "terminal",
+        "settings",
+        "disk usage",
+        "notes",
+        "",
+    ] {
         assert!(
             !might_be_calculator_query(app_query),
             "expected fast-gate to reject '{app_query}'"
@@ -218,11 +226,9 @@ fn calculator_plugin_inline_prefix_history_and_preferences_round_trip() {
         list.sections
             .iter()
             .any(|s| s.title.as_deref() == Some("Recent Calculations")
-                && s.items
-                    .iter()
-                    .any(|i| i.title == "300"
-                        && i.icon_path.as_deref()
-                            == Some("asset://icons/plugins/calc-arithmetic.svg")))
+                && s.items.iter().any(|i| i.title == "300"
+                    && i.icon_path.as_deref()
+                        == Some("asset://icons/plugins/calc-arithmetic.svg")))
     );
 
     // SearchTextChanged evaluates live inside Calculator view.
@@ -280,8 +286,16 @@ fn cached_currency_parsers_ttl_and_sqlite_round_trip() {
     // 2. Stale-While-Revalidate TTL checks
     assert!(needs_currency_refresh(None, Some(86_400), 1_000_000));
     assert!(!needs_currency_refresh(None, None, 1_000_000)); // disabled
-    assert!(!needs_currency_refresh(Some(990_000), Some(86_400), 1_000_000)); // fresh (10k < 86.4k)
-    assert!(needs_currency_refresh(Some(900_000), Some(86_400), 1_000_000)); // stale (100k >= 86.4k)
+    assert!(!needs_currency_refresh(
+        Some(990_000),
+        Some(86_400),
+        1_000_000
+    )); // fresh (10k < 86.4k)
+    assert!(needs_currency_refresh(
+        Some(900_000),
+        Some(86_400),
+        1_000_000
+    )); // stale (100k >= 86.4k)
 
     // 3. Primary fawazahmed0/currency-api parser (fiat + crypto)
     let fawaz_json = r#"{

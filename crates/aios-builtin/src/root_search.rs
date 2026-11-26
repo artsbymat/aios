@@ -275,10 +275,9 @@ impl RootSearchOrchestrator {
         }
 
         let mut sections: Vec<ListSection> = Vec::new();
-        let allow_inline =
-            !trimmed.is_empty() && (active_filter.is_empty() || active_filter == "all" || active_filter == "plugins");
-        let is_exclusive_inline =
-            allow_inline && inline_results.iter().any(|item| item.exclusive);
+        let allow_inline = !trimmed.is_empty()
+            && (active_filter.is_empty() || active_filter == "all" || active_filter == "plugins");
+        let is_exclusive_inline = allow_inline && inline_results.iter().any(|item| item.exclusive);
 
         if allow_inline && !inline_results.is_empty() {
             for res in inline_results {
@@ -891,9 +890,8 @@ impl RootSearchOrchestrator {
                     ExternalRootKind::Plugin => format!("Open {}", ext.title),
                     ExternalRootKind::ScriptCommand => format!("Run {}", ext.title),
                 };
-                let mut actions = vec![
-                    ActionItem::new(ext.action_id.clone(), primary_label).shortcut("Enter"),
-                ];
+                let mut actions =
+                    vec![ActionItem::new(ext.action_id.clone(), primary_label).shortcut("Enter")];
                 if let Some((sec_id, sec_title)) = &ext.secondary_action_id {
                     actions.push(
                         ActionItem::new(sec_id.clone(), sec_title.clone()).shortcut("Ctrl+Enter"),
@@ -1001,7 +999,14 @@ fn build_corpus(
             "Browse, run, and reload local scripts in ~/.config/aios/scripts",
             "SH",
             "core.open-scripts",
-            vec!["scripts", "script", "commands", "shell", "bash", "automation"],
+            vec![
+                "scripts",
+                "script",
+                "commands",
+                "shell",
+                "bash",
+                "automation",
+            ],
         ),
         (
             "core:reload-apps",
@@ -1367,7 +1372,12 @@ mod tests {
         };
         assert_eq!(core_only.sections.len(), 1);
         assert_eq!(core_only.sections[0].title.as_deref(), Some("AIOS Core"));
-        assert!(core_only.sections[0].items.iter().any(|i| i.id == "core:scripts"));
+        assert!(
+            core_only.sections[0]
+                .items
+                .iter()
+                .any(|i| i.id == "core:scripts")
+        );
     }
 
     #[test]
@@ -1395,11 +1405,15 @@ mod tests {
             exclusive: false,
         }];
 
-        let ViewNode::List(non_exclusive) = orch.build_root_view_with_inline("10*30", "all", &inline)
+        let ViewNode::List(non_exclusive) =
+            orch.build_root_view_with_inline("10*30", "all", &inline)
         else {
             panic!("expected list view");
         };
-        assert_eq!(non_exclusive.sections[0].title.as_deref(), Some("Calculator"));
+        assert_eq!(
+            non_exclusive.sections[0].title.as_deref(),
+            Some("Calculator")
+        );
         assert_eq!(non_exclusive.sections[0].items[0].title, "300");
 
         let mut exclusive_inline = inline;
@@ -1410,6 +1424,9 @@ mod tests {
             panic!("expected list view");
         };
         assert_eq!(exclusive_view.sections.len(), 1);
-        assert_eq!(exclusive_view.sections[0].title.as_deref(), Some("Calculator"));
+        assert_eq!(
+            exclusive_view.sections[0].title.as_deref(),
+            Some("Calculator")
+        );
     }
 }

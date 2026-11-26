@@ -122,10 +122,7 @@ pub fn discover_layered_plugins(
     by_id.into_values().collect()
 }
 
-fn discover_plugins_with_origin(
-    plugins_dir: &Path,
-    origin: PluginOrigin,
-) -> Vec<InstalledPlugin> {
+fn discover_plugins_with_origin(plugins_dir: &Path, origin: PluginOrigin) -> Vec<InstalledPlugin> {
     let Ok(entries) = fs::read_dir(plugins_dir) else {
         return Vec::new();
     };

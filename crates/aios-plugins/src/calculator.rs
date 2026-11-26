@@ -21,20 +21,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(feature = "host")]
 use aios_core::Database;
 use aios_core::view::FilterMode;
+use aios_plugin_sdk::{
+    ActionItem, ActionPanel, ActionPanelBuilder, EmptyView, InlinePluginResult, ListItemBuilder,
+    ListViewBuilder, MetadataEntry, SemanticTone, ViewNode,
+};
 #[cfg(feature = "host")]
 use aios_plugin_sdk::{
     CommandMode, CommandSpec, DefaultViewKind, PluginCapabilities, PluginEvent, PluginManifest,
     PluginResponse, PreferenceKind, PreferenceSpec,
 };
-use aios_plugin_sdk::{
-    ActionItem, ActionPanel, ActionPanelBuilder, EmptyView, InlinePluginResult, ListItemBuilder,
-    ListViewBuilder, MetadataEntry, SemanticTone, ViewNode,
-};
 use serde::{Deserialize, Serialize};
 
+use crate::now_epoch_secs;
 #[cfg(feature = "host")]
 use crate::{FirstPartyPlugin, PluginEnv};
-use crate::now_epoch_secs;
 
 pub const CALCULATOR_PLUGIN_ID: &str = "com.aios.calculator";
 pub const CALCULATOR_COMMAND_ID: &str = "calculator";
@@ -377,11 +377,14 @@ pub fn fetch_latest_currency_rates() -> Result<CachedCurrencyRates, String> {
 /// Immediately fetches and persists fresh exchange rates (used by manual "Refresh Exchange Rates Now"
 /// off the UI thread). Preserves any existing crypto rates when falling back to fiat-only `open.er-api`.
 #[cfg(feature = "host")]
-pub fn refresh_currency_rates_now(db: &Arc<Mutex<Database>>) -> Result<CachedCurrencyRates, String> {
+pub fn refresh_currency_rates_now(
+    db: &Arc<Mutex<Database>>,
+) -> Result<CachedCurrencyRates, String> {
     let mut fetched = fetch_latest_currency_rates()?;
     // If fallback provider lacked crypto (BTC/ETH), keep previously cached values for missing codes.
     if let Ok(guard) = db.lock()
-        && let Ok(Some(raw)) = guard.plugin_storage_get(CALCULATOR_PLUGIN_ID, CUSTOM_RATES_STORAGE_KEY)
+        && let Ok(Some(raw)) =
+            guard.plugin_storage_get(CALCULATOR_PLUGIN_ID, CUSTOM_RATES_STORAGE_KEY)
         && let Ok(prev) = serde_json::from_slice::<CachedCurrencyRates>(&raw)
     {
         for (k, v) in prev.rates {
@@ -808,10 +811,7 @@ pub fn evaluate_inline_with_opts(
     let eval = evaluate_expression(expr, opts).ok()?;
 
     // Avoid noisy inline cards for trivial bare numbers like "42" unless explicit `=` prefix was used.
-    if !exclusive
-        && eval.category == CalcCategory::Arithmetic
-        && !has_math_operator_or_func(expr)
-    {
+    if !exclusive && eval.category == CalcCategory::Arithmetic && !has_math_operator_or_func(expr) {
         return None;
     }
 
@@ -831,9 +831,7 @@ pub fn evaluate_inline_with_opts(
             tag_label: eval.category.label().to_string(),
             copy_value: eval.copy_value,
             copy_action_id: format!("plugin.inline:{CALCULATOR_PLUGIN_ID}:copy:{encoded}"),
-            open_action_id: format!(
-                "plugin.run:{CALCULATOR_PLUGIN_ID}:{CALCULATOR_COMMAND_ID}"
-            ),
+            open_action_id: format!("plugin.run:{CALCULATOR_PLUGIN_ID}:{CALCULATOR_COMMAND_ID}"),
             open_action_title: "Open Calculator & History".to_string(),
             exclusive,
         },
@@ -1096,19 +1094,13 @@ impl FirstPartyPlugin for CalculatorPlugin {
             tag_label: eval.category.label().to_string(),
             copy_value: eval.copy_value,
             copy_action_id: format!("plugin.inline:{CALCULATOR_PLUGIN_ID}:copy:{encoded}"),
-            open_action_id: format!(
-                "plugin.run:{CALCULATOR_PLUGIN_ID}:{CALCULATOR_COMMAND_ID}"
-            ),
+            open_action_id: format!("plugin.run:{CALCULATOR_PLUGIN_ID}:{CALCULATOR_COMMAND_ID}"),
             open_action_title: "Open Calculator & History".to_string(),
             exclusive,
         })
     }
 
-    fn handle_inline_action(
-        &self,
-        action_id: &str,
-        env: &PluginEnv<'_>,
-    ) -> Option<PluginResponse> {
+    fn handle_inline_action(&self, action_id: &str, env: &PluginEnv<'_>) -> Option<PluginResponse> {
         let encoded = action_id.strip_prefix("copy:")?;
         let (expr, result) = decode_calc_payload(encoded)?;
         let opts = CalcOptions::from_env(env);
@@ -1200,7 +1192,11 @@ fn has_math_operator_or_func(expr: &str) -> bool {
 
 /// Evaluates any supported Calculator, Base, Unit, Currency, Date, or Timezone expression.
 pub fn evaluate_expression(raw: &str, opts: &CalcOptions) -> Result<CalcEvaluation, String> {
-    let expr = raw.trim().strip_prefix('=').map(str::trim).unwrap_or(raw.trim());
+    let expr = raw
+        .trim()
+        .strip_prefix('=')
+        .map(str::trim)
+        .unwrap_or(raw.trim());
     if expr.is_empty() {
         return Err("Empty expression".to_string());
     }
@@ -1350,9 +1346,10 @@ fn try_evaluate_percentage_phrase(expr: &str, opts: &CalcOptions) -> Option<Calc
                             if is_add { "+" } else { "-" },
                             format_number(delta, opts.decimal_places)
                         ),
-                        notes: vec![
-                            ("Delta".to_string(), format_number(delta, opts.decimal_places)),
-                        ],
+                        notes: vec![(
+                            "Delta".to_string(),
+                            format_number(delta, opts.decimal_places),
+                        )],
                     });
                 }
             }
@@ -1443,113 +1440,348 @@ fn lookup_unit(raw: &str, base_font_px: f64) -> Option<UnitDef> {
     let s = trimmed.to_ascii_lowercase();
     let def = match s.as_str() {
         // Length (base: meter)
-        "mm" | "millimeter" | "millimeters" => UnitDef { dim: UnitDim::Length, canonical: "mm", to_base: 0.001 },
-        "cm" | "centimeter" | "centimeters" => UnitDef { dim: UnitDim::Length, canonical: "cm", to_base: 0.01 },
-        "m" | "meter" | "meters" | "metre" | "metres" => UnitDef { dim: UnitDim::Length, canonical: "m", to_base: 1.0 },
-        "km" | "kilometer" | "kilometers" => UnitDef { dim: UnitDim::Length, canonical: "km", to_base: 1000.0 },
-        "in" | "inch" | "inches" => UnitDef { dim: UnitDim::Length, canonical: "in", to_base: 0.0254 },
-        "ft" | "foot" | "feet" => UnitDef { dim: UnitDim::Length, canonical: "ft", to_base: 0.3048 },
-        "yd" | "yard" | "yards" => UnitDef { dim: UnitDim::Length, canonical: "yd", to_base: 0.9144 },
-        "mi" | "mile" | "miles" => UnitDef { dim: UnitDim::Length, canonical: "mi", to_base: 1609.344 },
-        "nmi" => UnitDef { dim: UnitDim::Length, canonical: "nmi", to_base: 1852.0 },
+        "mm" | "millimeter" | "millimeters" => UnitDef {
+            dim: UnitDim::Length,
+            canonical: "mm",
+            to_base: 0.001,
+        },
+        "cm" | "centimeter" | "centimeters" => UnitDef {
+            dim: UnitDim::Length,
+            canonical: "cm",
+            to_base: 0.01,
+        },
+        "m" | "meter" | "meters" | "metre" | "metres" => UnitDef {
+            dim: UnitDim::Length,
+            canonical: "m",
+            to_base: 1.0,
+        },
+        "km" | "kilometer" | "kilometers" => UnitDef {
+            dim: UnitDim::Length,
+            canonical: "km",
+            to_base: 1000.0,
+        },
+        "in" | "inch" | "inches" => UnitDef {
+            dim: UnitDim::Length,
+            canonical: "in",
+            to_base: 0.0254,
+        },
+        "ft" | "foot" | "feet" => UnitDef {
+            dim: UnitDim::Length,
+            canonical: "ft",
+            to_base: 0.3048,
+        },
+        "yd" | "yard" | "yards" => UnitDef {
+            dim: UnitDim::Length,
+            canonical: "yd",
+            to_base: 0.9144,
+        },
+        "mi" | "mile" | "miles" => UnitDef {
+            dim: UnitDim::Length,
+            canonical: "mi",
+            to_base: 1609.344,
+        },
+        "nmi" => UnitDef {
+            dim: UnitDim::Length,
+            canonical: "nmi",
+            to_base: 1852.0,
+        },
 
         // Weight / Mass (base: gram)
-        "mg" | "milligram" | "milligrams" => UnitDef { dim: UnitDim::Weight, canonical: "mg", to_base: 0.001 },
-        "g" | "gram" | "grams" => UnitDef { dim: UnitDim::Weight, canonical: "g", to_base: 1.0 },
-        "kg" | "kilogram" | "kilograms" => UnitDef { dim: UnitDim::Weight, canonical: "kg", to_base: 1000.0 },
-        "t" | "tonne" | "tonnes" => UnitDef { dim: UnitDim::Weight, canonical: "t", to_base: 1_000_000.0 },
-        "oz" | "ounce" | "ounces" => UnitDef { dim: UnitDim::Weight, canonical: "oz", to_base: 28.349_523_125 },
-        "lb" | "lbs" | "pound" | "pounds" => UnitDef { dim: UnitDim::Weight, canonical: "lb", to_base: 453.592_37 },
+        "mg" | "milligram" | "milligrams" => UnitDef {
+            dim: UnitDim::Weight,
+            canonical: "mg",
+            to_base: 0.001,
+        },
+        "g" | "gram" | "grams" => UnitDef {
+            dim: UnitDim::Weight,
+            canonical: "g",
+            to_base: 1.0,
+        },
+        "kg" | "kilogram" | "kilograms" => UnitDef {
+            dim: UnitDim::Weight,
+            canonical: "kg",
+            to_base: 1000.0,
+        },
+        "t" | "tonne" | "tonnes" => UnitDef {
+            dim: UnitDim::Weight,
+            canonical: "t",
+            to_base: 1_000_000.0,
+        },
+        "oz" | "ounce" | "ounces" => UnitDef {
+            dim: UnitDim::Weight,
+            canonical: "oz",
+            to_base: 28.349_523_125,
+        },
+        "lb" | "lbs" | "pound" | "pounds" => UnitDef {
+            dim: UnitDim::Weight,
+            canonical: "lb",
+            to_base: 453.592_37,
+        },
 
         // Temperature (affine)
-        "c" | "°c" | "celsius" => UnitDef { dim: UnitDim::Temp, canonical: "°C", to_base: 1.0 },
-        "f" | "°f" | "fahrenheit" => UnitDef { dim: UnitDim::Temp, canonical: "°F", to_base: 2.0 },
-        "k" | "kelvin" => UnitDef { dim: UnitDim::Temp, canonical: "K", to_base: 3.0 },
+        "c" | "°c" | "celsius" => UnitDef {
+            dim: UnitDim::Temp,
+            canonical: "°C",
+            to_base: 1.0,
+        },
+        "f" | "°f" | "fahrenheit" => UnitDef {
+            dim: UnitDim::Temp,
+            canonical: "°F",
+            to_base: 2.0,
+        },
+        "k" | "kelvin" => UnitDef {
+            dim: UnitDim::Temp,
+            canonical: "K",
+            to_base: 3.0,
+        },
 
         // Data storage (base: byte)
-        "b" | "bit" | "bits" => UnitDef { dim: UnitDim::Data, canonical: "bit", to_base: 0.125 },
-        "byte" | "bytes" => UnitDef { dim: UnitDim::Data, canonical: "B", to_base: 1.0 },
-        "kb" => UnitDef { dim: UnitDim::Data, canonical: "KB", to_base: 1_000.0 },
-        "mb" => UnitDef { dim: UnitDim::Data, canonical: "MB", to_base: 1_000_000.0 },
-        "gb" => UnitDef { dim: UnitDim::Data, canonical: "GB", to_base: 1_000_000_000.0 },
-        "tb" => UnitDef { dim: UnitDim::Data, canonical: "TB", to_base: 1_000_000_000_000.0 },
-        "pb" => UnitDef { dim: UnitDim::Data, canonical: "PB", to_base: 1_000_000_000_000_000.0 },
-        "kib" => UnitDef { dim: UnitDim::Data, canonical: "KiB", to_base: 1_024.0 },
-        "mib" => UnitDef { dim: UnitDim::Data, canonical: "MiB", to_base: 1_048_576.0 },
-        "gib" => UnitDef { dim: UnitDim::Data, canonical: "GiB", to_base: 1_073_741_824.0 },
-        "tib" => UnitDef { dim: UnitDim::Data, canonical: "TiB", to_base: 1_099_511_627_776.0 },
+        "b" | "bit" | "bits" => UnitDef {
+            dim: UnitDim::Data,
+            canonical: "bit",
+            to_base: 0.125,
+        },
+        "byte" | "bytes" => UnitDef {
+            dim: UnitDim::Data,
+            canonical: "B",
+            to_base: 1.0,
+        },
+        "kb" => UnitDef {
+            dim: UnitDim::Data,
+            canonical: "KB",
+            to_base: 1_000.0,
+        },
+        "mb" => UnitDef {
+            dim: UnitDim::Data,
+            canonical: "MB",
+            to_base: 1_000_000.0,
+        },
+        "gb" => UnitDef {
+            dim: UnitDim::Data,
+            canonical: "GB",
+            to_base: 1_000_000_000.0,
+        },
+        "tb" => UnitDef {
+            dim: UnitDim::Data,
+            canonical: "TB",
+            to_base: 1_000_000_000_000.0,
+        },
+        "pb" => UnitDef {
+            dim: UnitDim::Data,
+            canonical: "PB",
+            to_base: 1_000_000_000_000_000.0,
+        },
+        "kib" => UnitDef {
+            dim: UnitDim::Data,
+            canonical: "KiB",
+            to_base: 1_024.0,
+        },
+        "mib" => UnitDef {
+            dim: UnitDim::Data,
+            canonical: "MiB",
+            to_base: 1_048_576.0,
+        },
+        "gib" => UnitDef {
+            dim: UnitDim::Data,
+            canonical: "GiB",
+            to_base: 1_073_741_824.0,
+        },
+        "tib" => UnitDef {
+            dim: UnitDim::Data,
+            canonical: "TiB",
+            to_base: 1_099_511_627_776.0,
+        },
 
         // Time (base: second)
-        "ms" | "millisecond" | "milliseconds" => UnitDef { dim: UnitDim::Time, canonical: "ms", to_base: 0.001 },
-        "s" | "sec" | "secs" | "second" | "seconds" => UnitDef { dim: UnitDim::Time, canonical: "s", to_base: 1.0 },
-        "min" | "mins" | "minute" | "minutes" => UnitDef { dim: UnitDim::Time, canonical: "min", to_base: 60.0 },
-        "h" | "hr" | "hrs" | "hour" | "hours" => UnitDef { dim: UnitDim::Time, canonical: "h", to_base: 3600.0 },
-        "d" | "day" | "days" => UnitDef { dim: UnitDim::Time, canonical: "d", to_base: 86_400.0 },
-        "wk" | "week" | "weeks" => UnitDef { dim: UnitDim::Time, canonical: "wk", to_base: 604_800.0 },
-        "yr" | "year" | "years" => UnitDef { dim: UnitDim::Time, canonical: "yr", to_base: 31_557_600.0 },
+        "ms" | "millisecond" | "milliseconds" => UnitDef {
+            dim: UnitDim::Time,
+            canonical: "ms",
+            to_base: 0.001,
+        },
+        "s" | "sec" | "secs" | "second" | "seconds" => UnitDef {
+            dim: UnitDim::Time,
+            canonical: "s",
+            to_base: 1.0,
+        },
+        "min" | "mins" | "minute" | "minutes" => UnitDef {
+            dim: UnitDim::Time,
+            canonical: "min",
+            to_base: 60.0,
+        },
+        "h" | "hr" | "hrs" | "hour" | "hours" => UnitDef {
+            dim: UnitDim::Time,
+            canonical: "h",
+            to_base: 3600.0,
+        },
+        "d" | "day" | "days" => UnitDef {
+            dim: UnitDim::Time,
+            canonical: "d",
+            to_base: 86_400.0,
+        },
+        "wk" | "week" | "weeks" => UnitDef {
+            dim: UnitDim::Time,
+            canonical: "wk",
+            to_base: 604_800.0,
+        },
+        "yr" | "year" | "years" => UnitDef {
+            dim: UnitDim::Time,
+            canonical: "yr",
+            to_base: 31_557_600.0,
+        },
 
         // Speed (base: m/s)
-        "m/s" | "mps" => UnitDef { dim: UnitDim::Speed, canonical: "m/s", to_base: 1.0 },
-        "km/h" | "kph" | "kmh" => UnitDef { dim: UnitDim::Speed, canonical: "km/h", to_base: 1.0 / 3.6 },
-        "mph" => UnitDef { dim: UnitDim::Speed, canonical: "mph", to_base: 0.44704 },
-        "kn" | "knot" | "knots" => UnitDef { dim: UnitDim::Speed, canonical: "kn", to_base: 1852.0 / 3600.0 },
+        "m/s" | "mps" => UnitDef {
+            dim: UnitDim::Speed,
+            canonical: "m/s",
+            to_base: 1.0,
+        },
+        "km/h" | "kph" | "kmh" => UnitDef {
+            dim: UnitDim::Speed,
+            canonical: "km/h",
+            to_base: 1.0 / 3.6,
+        },
+        "mph" => UnitDef {
+            dim: UnitDim::Speed,
+            canonical: "mph",
+            to_base: 0.44704,
+        },
+        "kn" | "knot" | "knots" => UnitDef {
+            dim: UnitDim::Speed,
+            canonical: "kn",
+            to_base: 1852.0 / 3600.0,
+        },
 
         // Area (base: m²)
-        "mm2" | "mm²" => UnitDef { dim: UnitDim::Area, canonical: "mm²", to_base: 1e-6 },
-        "cm2" | "cm²" => UnitDef { dim: UnitDim::Area, canonical: "cm²", to_base: 1e-4 },
-        "m2" | "m²" | "sqm" => UnitDef { dim: UnitDim::Area, canonical: "m²", to_base: 1.0 },
-        "km2" | "km²" => UnitDef { dim: UnitDim::Area, canonical: "km²", to_base: 1e6 },
-        "ha" | "hectare" | "hectares" => UnitDef { dim: UnitDim::Area, canonical: "ha", to_base: 1e4 },
-        "sqft" | "ft2" | "ft²" => UnitDef { dim: UnitDim::Area, canonical: "ft²", to_base: 0.092_903_04 },
-        "acre" | "acres" => UnitDef { dim: UnitDim::Area, canonical: "acre", to_base: 4_046.856_422_4 },
+        "mm2" | "mm²" => UnitDef {
+            dim: UnitDim::Area,
+            canonical: "mm²",
+            to_base: 1e-6,
+        },
+        "cm2" | "cm²" => UnitDef {
+            dim: UnitDim::Area,
+            canonical: "cm²",
+            to_base: 1e-4,
+        },
+        "m2" | "m²" | "sqm" => UnitDef {
+            dim: UnitDim::Area,
+            canonical: "m²",
+            to_base: 1.0,
+        },
+        "km2" | "km²" => UnitDef {
+            dim: UnitDim::Area,
+            canonical: "km²",
+            to_base: 1e6,
+        },
+        "ha" | "hectare" | "hectares" => UnitDef {
+            dim: UnitDim::Area,
+            canonical: "ha",
+            to_base: 1e4,
+        },
+        "sqft" | "ft2" | "ft²" => UnitDef {
+            dim: UnitDim::Area,
+            canonical: "ft²",
+            to_base: 0.092_903_04,
+        },
+        "acre" | "acres" => UnitDef {
+            dim: UnitDim::Area,
+            canonical: "acre",
+            to_base: 4_046.856_422_4,
+        },
 
         // Volume (base: liter)
-        "ml" | "milliliter" | "milliliters" | "millilitre" | "millilitres" | "cc" | "cm3" | "cm³" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "mL", to_base: 0.001 }
-        }
-        "cl" | "centiliter" | "centiliters" | "centilitre" | "centilitres" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "cL", to_base: 0.01 }
-        }
-        "dl" | "deciliter" | "deciliters" | "decilitre" | "decilitres" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "dL", to_base: 0.1 }
-        }
-        "l" | "liter" | "liters" | "litre" | "litres" | "dm3" | "dm³" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "L", to_base: 1.0 }
-        }
-        "m3" | "m³" | "cbm" => UnitDef { dim: UnitDim::Volume, canonical: "m³", to_base: 1_000.0 },
-        "tsp" | "teaspoon" | "teaspoons" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "tsp", to_base: 3.785_411_784 / 768.0 }
-        }
-        "tbsp" | "tablespoon" | "tablespoons" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "tbsp", to_base: 3.785_411_784 / 256.0 }
-        }
-        "floz" | "fl oz" | "fl_oz" | "fl-oz" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "fl oz", to_base: 3.785_411_784 / 128.0 }
-        }
-        "cup" | "cups" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "cup", to_base: 3.785_411_784 / 16.0 }
-        }
-        "pint" | "pints" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "pint", to_base: 3.785_411_784 / 8.0 }
-        }
-        "qt" | "quart" | "quarts" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "qt", to_base: 3.785_411_784 / 4.0 }
-        }
-        "gal" | "gallon" | "gallons" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "gal", to_base: 3.785_411_784 }
-        }
-        "in3" | "in³" | "cuin" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "in³", to_base: 0.016_387_064 }
-        }
-        "ft3" | "ft³" | "cuft" => {
-            UnitDef { dim: UnitDim::Volume, canonical: "ft³", to_base: 28.316_846_592 }
-        }
+        "ml" | "milliliter" | "milliliters" | "millilitre" | "millilitres" | "cc" | "cm3"
+        | "cm³" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "mL",
+            to_base: 0.001,
+        },
+        "cl" | "centiliter" | "centiliters" | "centilitre" | "centilitres" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "cL",
+            to_base: 0.01,
+        },
+        "dl" | "deciliter" | "deciliters" | "decilitre" | "decilitres" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "dL",
+            to_base: 0.1,
+        },
+        "l" | "liter" | "liters" | "litre" | "litres" | "dm3" | "dm³" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "L",
+            to_base: 1.0,
+        },
+        "m3" | "m³" | "cbm" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "m³",
+            to_base: 1_000.0,
+        },
+        "tsp" | "teaspoon" | "teaspoons" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "tsp",
+            to_base: 3.785_411_784 / 768.0,
+        },
+        "tbsp" | "tablespoon" | "tablespoons" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "tbsp",
+            to_base: 3.785_411_784 / 256.0,
+        },
+        "floz" | "fl oz" | "fl_oz" | "fl-oz" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "fl oz",
+            to_base: 3.785_411_784 / 128.0,
+        },
+        "cup" | "cups" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "cup",
+            to_base: 3.785_411_784 / 16.0,
+        },
+        "pint" | "pints" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "pint",
+            to_base: 3.785_411_784 / 8.0,
+        },
+        "qt" | "quart" | "quarts" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "qt",
+            to_base: 3.785_411_784 / 4.0,
+        },
+        "gal" | "gallon" | "gallons" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "gal",
+            to_base: 3.785_411_784,
+        },
+        "in3" | "in³" | "cuin" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "in³",
+            to_base: 0.016_387_064,
+        },
+        "ft3" | "ft³" | "cuft" => UnitDef {
+            dim: UnitDim::Volume,
+            canonical: "ft³",
+            to_base: 28.316_846_592,
+        },
 
         // CSS (base: px)
-        "px" => UnitDef { dim: UnitDim::Css, canonical: "px", to_base: 1.0 },
-        "rem" => UnitDef { dim: UnitDim::Css, canonical: "rem", to_base: base_font_px },
-        "em" => UnitDef { dim: UnitDim::Css, canonical: "em", to_base: base_font_px },
-        "pt" => UnitDef { dim: UnitDim::Css, canonical: "pt", to_base: 96.0 / 72.0 },
+        "px" => UnitDef {
+            dim: UnitDim::Css,
+            canonical: "px",
+            to_base: 1.0,
+        },
+        "rem" => UnitDef {
+            dim: UnitDim::Css,
+            canonical: "rem",
+            to_base: base_font_px,
+        },
+        "em" => UnitDef {
+            dim: UnitDim::Css,
+            canonical: "em",
+            to_base: base_font_px,
+        },
+        "pt" => UnitDef {
+            dim: UnitDim::Css,
+            canonical: "pt",
+            to_base: 96.0 / 72.0,
+        },
 
         _ => return None,
     };
@@ -1589,7 +1821,11 @@ fn try_evaluate_unit_conversion(expr: &str, opts: &CalcOptions) -> Option<CalcEv
     let mut notes = vec![
         (
             "From".to_string(),
-            format!("{} {}", format_number(val, opts.decimal_places), src.canonical),
+            format!(
+                "{} {}",
+                format_number(val, opts.decimal_places),
+                src.canonical
+            ),
         ),
         ("To".to_string(), formatted.clone()),
     ];
@@ -1641,7 +1877,10 @@ const OFFLINE_USD_RATES: &[(&str, f64, usize)] = &[
     ("ETH", 0.000_31, 5),
 ];
 
-fn lookup_currency_rate(code: &str, custom: &HashMap<String, f64>) -> Option<(&'static str, f64, usize)> {
+fn lookup_currency_rate(
+    code: &str,
+    custom: &HashMap<String, f64>,
+) -> Option<(&'static str, f64, usize)> {
     let upper = code.trim().to_ascii_uppercase();
     for &(sym, default_rate, decs) in OFFLINE_USD_RATES {
         if sym == upper {
@@ -1674,7 +1913,10 @@ fn currency_source_metadata(
         (subtitle, notes)
     } else {
         let subtitle = format!("{src_sym} -> {dst_sym} (offline fallback)");
-        notes.push(("Source".to_string(), "Built-in offline fallback".to_string()));
+        notes.push((
+            "Source".to_string(),
+            "Built-in offline fallback".to_string(),
+        ));
         (subtitle, notes)
     }
 }
@@ -1686,7 +1928,8 @@ fn try_evaluate_currency(expr: &str, opts: &CalcOptions) -> Option<CalcEvaluatio
     if let Some((lhs, rhs)) = split_conversion_ci(&lower, expr) {
         let (amount, src_code) = parse_currency_amount(lhs.trim())?;
         let (src_sym, src_rate, _) = lookup_currency_rate(&src_code, &opts.custom_rates_usd)?;
-        let (dst_sym, dst_rate, dst_decs) = lookup_currency_rate(rhs.trim(), &opts.custom_rates_usd)?;
+        let (dst_sym, dst_rate, dst_decs) =
+            lookup_currency_rate(rhs.trim(), &opts.custom_rates_usd)?;
         let usd = amount / src_rate;
         let result = usd * dst_rate;
         let formatted_num = format_grouped_currency(result, dst_decs);
@@ -1706,7 +1949,11 @@ fn try_evaluate_currency(expr: &str, opts: &CalcOptions) -> Option<CalcEvaluatio
     }
 
     // Case B: bare symbol amount (`$49.99`, `€20`, `£10`, `¥5000`) -> convert to `opts.default_currency`.
-    if expr.starts_with('$') || expr.starts_with('€') || expr.starts_with('£') || expr.starts_with('¥') {
+    if expr.starts_with('$')
+        || expr.starts_with('€')
+        || expr.starts_with('£')
+        || expr.starts_with('¥')
+    {
         let (amount, src_code) = parse_currency_amount(expr)?;
         if src_code.eq_ignore_ascii_case(&opts.default_currency) {
             return None;
@@ -1836,7 +2083,8 @@ fn lookup_tz_offset_mins(raw: &str) -> Option<(&'static str, i64)> {
     let named = match s.as_str() {
         "utc" | "gmt" | "z" => ("UTC", 0),
         "wib" | "jakarta" | "bangkok" | "hanoi" | "ict" => ("WIB (UTC+7)", 7 * 60),
-        "wita" | "singapore" | "sg" | "sgt" | "kl" | "hongkong" | "hk" | "beijing" | "shanghai" | "taipei" | "perth" => ("WITA/SGT (UTC+8)", 8 * 60),
+        "wita" | "singapore" | "sg" | "sgt" | "kl" | "hongkong" | "hk" | "beijing" | "shanghai"
+        | "taipei" | "perth" => ("WITA/SGT (UTC+8)", 8 * 60),
         "wit" | "tokyo" | "jst" | "seoul" | "kst" => ("JST/WIT (UTC+9)", 9 * 60),
         "sydney" | "aest" => ("AEST (UTC+10)", 10 * 60),
         "auckland" | "nzst" => ("NZST (UTC+12)", 12 * 60),
@@ -1951,7 +2199,10 @@ fn try_evaluate_date_or_timezone(expr: &str) -> Option<CalcEvaluation> {
                 detail_subtitle: format!("{src_label} -> {dst_label}"),
                 notes: vec![
                     ("From".to_string(), format!("{hh:02}:{mm:02} {src_label}")),
-                    ("To".to_string(), format!("{out_h:02}:{out_m:02} {dst_label}{shift_suffix}")),
+                    (
+                        "To".to_string(),
+                        format!("{out_h:02}:{out_m:02} {dst_label}{shift_suffix}"),
+                    ),
                 ],
             });
         }
@@ -2044,7 +2295,11 @@ fn try_evaluate_date_or_timezone(expr: &str) -> Option<CalcEvaluation> {
                 formatted: format!("{iso} ({wd})"),
                 copy_value: iso,
                 category: CalcCategory::Date,
-                detail_subtitle: format!("{} {} days", if sign > 0 { "+" } else { "-" }, delta_days),
+                detail_subtitle: format!(
+                    "{} {} days",
+                    if sign > 0 { "+" } else { "-" },
+                    delta_days
+                ),
                 notes: vec![
                     ("Weekday".to_string(), wd.to_string()),
                     ("Delta".to_string(), format!("{} days", sign * delta_days)),
@@ -2170,7 +2425,10 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             continue;
         }
         // Hex / Bin / Octal integer literals
-        if ch == '0' && i + 1 < chars.len() && matches!(chars[i + 1], 'x' | 'X' | 'b' | 'B' | 'o' | 'O') {
+        if ch == '0'
+            && i + 1 < chars.len()
+            && matches!(chars[i + 1], 'x' | 'X' | 'b' | 'B' | 'o' | 'O')
+        {
             let radix = match chars[i + 1] {
                 'x' | 'X' => 16,
                 'b' | 'B' => 2,
@@ -2200,7 +2458,8 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             continue;
         }
 
-        if ch.is_ascii_digit() || (ch == '.' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit())
+        if ch.is_ascii_digit()
+            || (ch == '.' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit())
         {
             let mut num = String::new();
             let mut seen_dot = false;
@@ -2445,7 +2704,13 @@ impl Parser {
                     // Standalone trailing `%` (e.g. `50%`) scales by 0.01; binary `a % b` is modulo.
                     let is_binary_mod = matches!(
                         self.peek(),
-                        Some(Token::Number(_) | Token::Ident(_) | Token::LParen | Token::Minus | Token::Plus)
+                        Some(
+                            Token::Number(_)
+                                | Token::Ident(_)
+                                | Token::LParen
+                                | Token::Minus
+                                | Token::Plus
+                        )
                     );
                     if is_binary_mod {
                         let rhs = self.parse_pow()?;

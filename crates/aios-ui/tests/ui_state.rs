@@ -382,6 +382,25 @@ fn plugin_enter_exit_and_form_keybinds_remain_intact() {
         .and_then(Path::parent)
         .expect("repo root")
         .join("plugins/com.aios.calculator");
+    if !calc_dir.join("plugin.wasm").is_file() {
+        let status = std::process::Command::new("cargo")
+            .args([
+                "build",
+                "--manifest-path",
+                calc_dir.join("Cargo.toml").to_str().expect("utf8 path"),
+                "--target",
+                "wasm32-wasip2",
+                "--release",
+            ])
+            .status()
+            .expect("build com.aios.calculator wasm");
+        assert!(status.success(), "wasm32-wasip2 build failed");
+        std::fs::copy(
+            calc_dir.join("target/wasm32-wasip2/release/aios_plugin_calculator.wasm"),
+            calc_dir.join("plugin.wasm"),
+        )
+        .expect("copy plugin.wasm");
+    }
     host.install_local_plugin(&calc_dir)
         .expect("install com.aios.calculator");
 
@@ -477,7 +496,10 @@ fn plugin_enter_exit_and_form_keybinds_remain_intact() {
         .into_iter()
         .collect();
     assert_eq!(form_values.get("name").map(String::as_str), Some("Cobalt"));
-    assert_eq!(form_values.get("value").map(String::as_str), Some("#2459A8"));
+    assert_eq!(
+        form_values.get("value").map(String::as_str),
+        Some("#2459A8")
+    );
 }
 
 #[test]

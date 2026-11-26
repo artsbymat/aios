@@ -66,7 +66,9 @@ impl<'a> PluginEnv<'a> {
     #[must_use]
     pub fn preference(&self, name: &str) -> Option<String> {
         let db = self.db.lock().ok()?;
-        db.get_plugin_preference(self.plugin_id, name).ok().flatten()
+        db.get_plugin_preference(self.plugin_id, name)
+            .ok()
+            .flatten()
     }
 
     /// Returns a cloned handle to the shared SQLite database for non-blocking background updates.

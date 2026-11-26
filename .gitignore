@@ -1,6 +1,7 @@
 /target
 plugins/*/target
-dist/releases/
+plugins/*/plugin.wasm
+dist/
 registry/index.json
 **/*.rs.bk
 *.db

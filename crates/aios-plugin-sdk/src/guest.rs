@@ -171,9 +171,7 @@ pub fn dispatch_event<P: AiosPlugin>(event_json: &str) -> Result<String, String>
                 | PluginEvent::FormSubmitted { command_id, .. }
                 | PluginEvent::ConfirmAccepted { command_id, .. }
                 | PluginEvent::BackgroundRefresh { command_id } => command_id.clone(),
-                PluginEvent::InlineQuery { .. } | PluginEvent::InlineAction { .. } => {
-                    String::new()
-                }
+                PluginEvent::InlineQuery { .. } | PluginEvent::InlineAction { .. } => String::new(),
             };
             plugin.handle_event(&cmd, other)
         }

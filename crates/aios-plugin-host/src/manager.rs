@@ -10,9 +10,7 @@ use aios_plugin_sdk::{
     ActionItem, ActionPanel, CommandMode, HudMessage, MenuBarState, PluginEvent, PluginResponse,
     ToastMessage, ToastStyle, ViewNode,
 };
-use aios_plugins::{
-    FirstPartyPlugin, InlinePluginResult, PluginEnv, default_first_party_plugins,
-};
+use aios_plugins::{FirstPartyPlugin, InlinePluginResult, PluginEnv, default_first_party_plugins};
 
 use crate::manifest::{
     InstalledPlugin, PluginOrigin, discover_layered_plugins, install_plugin_from_dir,
@@ -561,7 +559,8 @@ impl PluginHost {
                         error = %err,
                         "isolated WASM plugin failure"
                     );
-                    let error_view = WasmPluginRuntime::isolated_error_view(&plugin, command_id, &err);
+                    let error_view =
+                        WasmPluginRuntime::isolated_error_view(&plugin, command_id, &err);
                     HostActionResult {
                         response: PluginResponse::push(
                             Some(format!("plugin-error:{plugin_id}:{command_id}")),
@@ -646,7 +645,8 @@ impl PluginHost {
                         error = %err,
                         "isolated WASM plugin event failure"
                     );
-                    let error_view = WasmPluginRuntime::isolated_error_view(&plugin, command_id, &err);
+                    let error_view =
+                        WasmPluginRuntime::isolated_error_view(&plugin, command_id, &err);
                     HostActionResult {
                         response: PluginResponse::render(error_view),
                         side_effects: Vec::new(),

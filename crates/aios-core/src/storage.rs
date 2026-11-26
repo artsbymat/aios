@@ -33,10 +33,11 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial_core_schema",
-    sql: r#"
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial_core_schema",
+        sql: r#"
         CREATE TABLE IF NOT EXISTS frecency (
             item_id TEXT NOT NULL,
             query_prefix TEXT NOT NULL DEFAULT '',
@@ -484,12 +485,7 @@ impl Database {
     }
 
     /// Enables or disables `plugin_id` without deleting bundled or user files.
-    pub fn set_plugin_enabled(
-        &self,
-        plugin_id: &str,
-        enabled: bool,
-        now_epoch: i64,
-    ) -> Result<()> {
+    pub fn set_plugin_enabled(&self, plugin_id: &str, enabled: bool, now_epoch: i64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO plugin_state (plugin_id, enabled, updated_at)
              VALUES (?1, ?2, ?3)

@@ -1,10 +1,13 @@
-name: Build Shipped External WASM Plugins
+name: Build & Release External WASM Plugins
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
   pull_request:
+
+permissions:
+  contents: write
 
 jobs:
   build-wasm-plugins:
@@ -37,3 +40,10 @@ jobs:
           path: |
             dist/plugins/
             dist/releases/
+      - name: Publish archives to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/releases/*.aios-plugin
+            dist/releases/SHA256SUMS

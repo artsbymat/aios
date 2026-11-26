@@ -116,10 +116,7 @@ pub fn validate_registry_entry(entry: &RegistryPluginEntry) -> Result<(), String
         return Err(format!("plugin '{}' must have a non-empty name", entry.id));
     }
     if entry.latest.version.trim().is_empty() {
-        return Err(format!(
-            "plugin '{}' must specify latest.version",
-            entry.id
-        ));
+        return Err(format!("plugin '{}' must specify latest.version", entry.id));
     }
     if entry.latest.download_url.trim().is_empty() {
         return Err(format!(
@@ -158,7 +155,12 @@ pub fn save_cached_registry_index(
         .lock()
         .map_err(|_| "database lock poisoned".to_string())?;
     guard
-        .plugin_storage_set(REGISTRY_CACHE_NS, REGISTRY_CACHE_KEY, &bytes, now_epoch_secs())
+        .plugin_storage_set(
+            REGISTRY_CACHE_NS,
+            REGISTRY_CACHE_KEY,
+            &bytes,
+            now_epoch_secs(),
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -174,7 +176,8 @@ pub fn fetch_registry_index(
     if !force_refresh
         && let Some(cached) = load_cached_registry_index(db)
         && ttl_hours > 0
-        && now.saturating_sub(cached.generated_at) < i64::try_from(ttl_hours * 3_600).unwrap_or(i64::MAX)
+        && now.saturating_sub(cached.generated_at)
+            < i64::try_from(ttl_hours * 3_600).unwrap_or(i64::MAX)
     {
         return Ok(cached);
     }
@@ -348,7 +351,10 @@ pub fn install_plugin_from_github(
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|n| n.eq_ignore_ascii_case("SHA256SUMS") || n.ends_with(".sha256"))
         })
-        .and_then(|a| a.get("browser_download_url").and_then(serde_json::Value::as_str))
+        .and_then(|a| {
+            a.get("browser_download_url")
+                .and_then(serde_json::Value::as_str)
+        })
         .and_then(|url| fetch_text_resource(url).ok())
         .and_then(|sums| parse_sha256sums_for_file(&sums, archive_name));
 

@@ -255,11 +255,13 @@ pub fn build_settings_home_view_with_first_party(
                 if let Some(first_cmd) = m.commands.first() {
                     actions = actions.section(
                         Some("Commands"),
-                        vec![ActionItem::new(
-                            format!("plugin.run:{}:{}", m.id, first_cmd.id),
-                            format!("Open {}", first_cmd.title),
-                        )
-                        .shortcut("Ctrl+Enter")],
+                        vec![
+                            ActionItem::new(
+                                format!("plugin.run:{}:{}", m.id, first_cmd.id),
+                                format!("Open {}", first_cmd.title),
+                            )
+                            .shortcut("Ctrl+Enter"),
+                        ],
                     );
                 }
 
@@ -278,7 +280,10 @@ pub fn build_settings_home_view_with_first_party(
                         },
                     )
                     .detail(
-                        format!("# {}\n\n{}\n\n## Commands\n\n{}", m.name, m.description, cmds_summary),
+                        format!(
+                            "# {}\n\n{}\n\n## Commands\n\n{}",
+                            m.name, m.description, cmds_summary
+                        ),
                         vec![
                             MetadataEntry::Label {
                                 title: "Plugin ID".to_string(),
@@ -641,8 +646,11 @@ pub fn build_plugin_store_view(
             } else if let Some(loc) = local {
                 if is_disabled {
                     primary_actions.push(
-                        ActionItem::new(format!("settings.plugin-toggle:{}", entry.id), "Enable Plugin")
-                            .shortcut("Enter"),
+                        ActionItem::new(
+                            format!("settings.plugin-toggle:{}", entry.id),
+                            "Enable Plugin",
+                        )
+                        .shortcut("Enter"),
                     );
                 } else if let Some(cmd) = loc.manifest.commands.first() {
                     primary_actions.push(
@@ -692,23 +700,24 @@ pub fn build_plugin_store_view(
                 panel = panel.section(Some("Manage"), manage);
             }
 
-            let mut item_builder = ListItemBuilder::new(format!("store:{}", entry.id), entry.name.clone())
-                .subtitle(format!("{} · {}", entry.author, entry.description))
-                .icon(
-                    entry
-                        .name
-                        .chars()
-                        .take(2)
-                        .collect::<String>()
-                        .to_uppercase(),
-                )
-                .filter_group(filter_group)
-                .keyword(entry.id.clone())
-                .keyword(entry.author.clone())
-                .keyword(entry.category.clone())
-                .accessory_tag(tag_label, tag_tone)
-                .detail(detail_md, metadata)
-                .actions(panel.build());
+            let mut item_builder =
+                ListItemBuilder::new(format!("store:{}", entry.id), entry.name.clone())
+                    .subtitle(format!("{} · {}", entry.author, entry.description))
+                    .icon(
+                        entry
+                            .name
+                            .chars()
+                            .take(2)
+                            .collect::<String>()
+                            .to_uppercase(),
+                    )
+                    .filter_group(filter_group)
+                    .keyword(entry.id.clone())
+                    .keyword(entry.author.clone())
+                    .keyword(entry.category.clone())
+                    .accessory_tag(tag_label, tag_tone)
+                    .detail(detail_md, metadata)
+                    .actions(panel.build());
             for tag in &entry.tags {
                 item_builder = item_builder.keyword(tag.clone());
             }
@@ -839,10 +848,7 @@ pub fn build_manifest_preferences_form(
     if manifest.preferences.is_empty() {
         form = form.field(FormField::Description {
             title: "No Preferences Declared".to_string(),
-            text: format!(
-                "{} does not declare any preferences.",
-                manifest.name
-            ),
+            text: format!("{} does not declare any preferences.", manifest.name),
         });
     } else {
         for pref in &manifest.preferences {

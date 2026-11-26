@@ -149,7 +149,11 @@ impl InlineTriggerSpec {
         if s.is_empty() || !self.is_configured() {
             return false;
         }
-        if self.prefixes.iter().any(|p| !p.is_empty() && s.starts_with(p.as_str())) {
+        if self
+            .prefixes
+            .iter()
+            .any(|p| !p.is_empty() && s.starts_with(p.as_str()))
+        {
             return true;
         }
         if self

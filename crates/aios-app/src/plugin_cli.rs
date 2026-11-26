@@ -124,7 +124,15 @@ pub fn run_plugin_cli(action: PluginCommand) -> Result<()> {
             author,
             template,
             sdk_path,
-        } => return scaffold_new_plugin(&name, id.as_deref(), &author, template, sdk_path.as_deref()),
+        } => {
+            return scaffold_new_plugin(
+                &name,
+                id.as_deref(),
+                &author,
+                template,
+                sdk_path.as_deref(),
+            );
+        }
         PluginCommand::Build { path } => return build_wasm_plugin(&path),
         PluginCommand::Pack { path, out } => return pack_wasm_plugin(&path, out.as_deref()),
         PluginCommand::RegistryBuild { registry_dir, out } => {
@@ -286,9 +294,8 @@ pub fn run_plugin_cli(action: PluginCommand) -> Result<()> {
                 if let Some(entry) = index.plugins.iter().find(|p| p.id == local.manifest.id)
                     && is_newer_version(&local.manifest.version, &entry.latest.version)
                 {
-                    let res =
-                        install_plugin_from_registry_entry(entry, &paths.plugins_dir(), &db)
-                            .map_err(|e| anyhow::anyhow!(e))?;
+                    let res = install_plugin_from_registry_entry(entry, &paths.plugins_dir(), &db)
+                        .map_err(|e| anyhow::anyhow!(e))?;
                     println!(
                         "Updated {} ({} -> {})",
                         res.manifest.id, local.manifest.version, res.manifest.version
@@ -439,7 +446,10 @@ fn pack_wasm_plugin(bundle_dir: &Path, out_dir: Option<&Path>) -> Result<()> {
 
     println!("Packed archive : {}", archive_path.display());
     println!("SHA-256        : {sha256}");
-    println!("\nRegistry PR snippet (registry/plugins/{}.toml):", plugin.manifest.id);
+    println!(
+        "\nRegistry PR snippet (registry/plugins/{}.toml):",
+        plugin.manifest.id
+    );
     println!("```toml");
     println!("id = \"{}\"", plugin.manifest.id);
     println!("name = \"{}\"", plugin.manifest.name);

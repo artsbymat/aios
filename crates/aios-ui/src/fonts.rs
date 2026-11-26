@@ -17,19 +17,19 @@ const INTER_VARIABLE_TTF: &[u8] = include_bytes!("../../../assets/fonts/InterVar
 const JETBRAINS_MONO_VARIABLE_TTF: &[u8] =
     include_bytes!("../../../assets/fonts/JetBrainsMonoVariable.ttf");
 const CALCULATOR_PLUGIN_ICON_SVG: &[u8] =
-    include_bytes!("../../../assets/icons/plugins/calculator.svg");
+    include_bytes!("../../../plugins/com.aios.calculator/icon.svg");
 const CALC_ARITHMETIC_ICON_SVG: &[u8] =
-    include_bytes!("../../../assets/icons/plugins/calc-arithmetic.svg");
+    include_bytes!("../../../plugins/com.aios.calculator/icons/calc-arithmetic.svg");
 const CALC_BASE_ICON_SVG: &[u8] =
-    include_bytes!("../../../assets/icons/plugins/calc-base.svg");
+    include_bytes!("../../../plugins/com.aios.calculator/icons/calc-base.svg");
 const CALC_UNIT_ICON_SVG: &[u8] =
-    include_bytes!("../../../assets/icons/plugins/calc-unit.svg");
+    include_bytes!("../../../plugins/com.aios.calculator/icons/calc-unit.svg");
 const CALC_CURRENCY_ICON_SVG: &[u8] =
-    include_bytes!("../../../assets/icons/plugins/calc-currency.svg");
+    include_bytes!("../../../plugins/com.aios.calculator/icons/calc-currency.svg");
 const CALC_DATE_ICON_SVG: &[u8] =
-    include_bytes!("../../../assets/icons/plugins/calc-date.svg");
+    include_bytes!("../../../plugins/com.aios.calculator/icons/calc-date.svg");
 const CALC_TIMEZONE_ICON_SVG: &[u8] =
-    include_bytes!("../../../assets/icons/plugins/calc-timezone.svg");
+    include_bytes!("../../../plugins/com.aios.calculator/icons/calc-timezone.svg");
 
 // GPUI's `SvgRenderer` queries these bundled fallback paths from the app's `AssetRegistry`
 // when rasterizing SVG desktop icons. Serving AIOS's embedded fonts resolves them cleanly
@@ -156,7 +156,10 @@ mod tests {
                 .load(icon_path)
                 .expect("load plugin icon")
                 .expect("plugin icon exists");
-            assert!(svg.starts_with(b"<svg"), "invalid SVG header for {icon_path}");
+            assert!(
+                svg.starts_with(b"<svg"),
+                "invalid SVG header for {icon_path}"
+            );
         }
     }
 }

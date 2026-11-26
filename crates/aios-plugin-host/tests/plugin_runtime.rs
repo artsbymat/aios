@@ -775,10 +775,41 @@ fn inline_calculator_copy_action_copies_and_closes_main_window() {
     assert_eq!(badge, "=");
 }
 
+fn ensure_calculator_wasm_bundle() -> PathBuf {
+    use std::process::Command;
+    use std::sync::Once;
+
+    static BUILD_ONCE: Once = Once::new();
+    let plugin_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/com.aios.calculator");
+    BUILD_ONCE.call_once(|| {
+        let wasm_out = plugin_dir.join("plugin.wasm");
+        if wasm_out.is_file() {
+            return;
+        }
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "--manifest-path",
+                plugin_dir.join("Cargo.toml").to_str().expect("utf8 path"),
+                "--target",
+                "wasm32-wasip2",
+                "--release",
+            ])
+            .status()
+            .expect("invoke cargo build for com.aios.calculator");
+        assert!(status.success(), "cargo build wasm32-wasip2 failed");
+        let built = plugin_dir.join("target/wasm32-wasip2/release/aios_plugin_calculator.wasm");
+        let tmp_wasm = plugin_dir.join(".plugin.wasm.tmp");
+        fs::copy(&built, &tmp_wasm).expect("copy compiled calculator wasm");
+        fs::rename(&tmp_wasm, &wasm_out).expect("install compiled calculator wasm");
+    });
+    plugin_dir
+}
+
 #[test]
 fn bundled_external_wasm_calculator_shadows_builtin_runs_inline_and_toggles_cleanly() {
-    let wasm_bundle_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../dist/plugins/com.aios.calculator");
+    let wasm_bundle_src = ensure_calculator_wasm_bundle();
     assert!(
         wasm_bundle_src.join("plugin.wasm").is_file(),
         "expected compiled wasm32-wasip2 bundle at {}",
@@ -810,7 +841,10 @@ fn bundled_external_wasm_calculator_shadows_builtin_runs_inline_and_toggles_clea
     if let PluginResponse::Push { view, .. } = &probe.response
         && let ViewNode::Error(err) = view.as_ref()
     {
-        panic!("WASM calculator failed to execute: {} | {:?}", err.title, err.detail);
+        panic!(
+            "WASM calculator failed to execute: {} | {:?}",
+            err.title, err.detail
+        );
     }
 
     // 2. Live inline evaluation executes inside Wasmtime sandbox & resolves icon.svg relative to bundle.
@@ -883,15 +917,13 @@ fn bundled_external_wasm_calculator_shadows_builtin_runs_inline_and_toggles_clea
 
 #[test]
 fn plugin_archive_pack_sha256_registry_and_store_install_work_end_to_end() {
-    let wasm_bundle_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../dist/plugins/com.aios.calculator");
+    let wasm_bundle_src = ensure_calculator_wasm_bundle();
     let tmp = TempDir::new().expect("temp dir");
 
     // 1. Pack `.aios-plugin` tarball and verify SHA-256 round-trip.
     let archive_path = tmp.path().join("com.aios.calculator-v0.1.0.aios-plugin");
-    let (packed_meta, sha256) =
-        aios_plugin_host::pack_plugin_dir(&wasm_bundle_src, &archive_path)
-            .expect("pack .aios-plugin archive");
+    let (packed_meta, sha256) = aios_plugin_host::pack_plugin_dir(&wasm_bundle_src, &archive_path)
+        .expect("pack .aios-plugin archive");
     assert_eq!(packed_meta.manifest.id, "com.aios.calculator");
     assert_eq!(sha256.len(), 64);
 
@@ -932,8 +964,8 @@ sha256 = "{sha256}"
     fs::write(reg_dir.join("plugins/com.aios.calculator.toml"), entry_toml)
         .expect("write registry entry");
 
-    let index = aios_plugin_host::build_registry_index_from_dir(&reg_dir)
-        .expect("build registry index");
+    let index =
+        aios_plugin_host::build_registry_index_from_dir(&reg_dir).expect("build registry index");
     assert_eq!(index.plugins.len(), 1);
     let index_path = reg_dir.join("index.json");
     fs::write(&index_path, serde_json::to_string_pretty(&index).unwrap())
@@ -947,30 +979,34 @@ sha256 = "{sha256}"
     ));
     let mut cfg = AiosConfig::default();
     cfg.plugins.registry_urls = vec![format!("file://{}", index_path.display())];
-    let mut host =
-        PluginHost::new(cfg, paths, Arc::clone(&db), WasmExecutionLimits::default())
-            .expect("init host");
+    let mut host = PluginHost::new(cfg, paths, Arc::clone(&db), WasmExecutionLimits::default())
+        .expect("init host");
 
-    let fetched = aios_plugin_host::fetch_registry_index(
-        &host.config().plugins.registry_urls,
-        &db,
-        6,
-        true,
-    )
-    .expect("fetch file:// index");
+    let fetched =
+        aios_plugin_host::fetch_registry_index(&host.config().plugins.registry_urls, &db, 6, true)
+            .expect("fetch file:// index");
     assert_eq!(fetched.plugins.len(), 1);
 
     let store_before = host.build_store_view();
     let ViewNode::List(store_list) = store_before else {
         panic!("expected ListView for Plugin Store");
     };
-    assert_eq!(store_list.sections[0].items[0].id, "store:com.aios.calculator");
+    assert_eq!(
+        store_list.sections[0].items[0].id,
+        "store:com.aios.calculator"
+    );
 
     // Install from registry with SHA-256 verification and verify user-installed layer shadows bundled.
     let installed = host
         .install_registry_plugin("com.aios.calculator")
         .expect("install from registry");
-    assert_eq!(installed.origin, aios_plugin_host::PluginOrigin::UserInstalled);
+    assert_eq!(
+        installed.origin,
+        aios_plugin_host::PluginOrigin::UserInstalled
+    );
     assert!(installed.root_dir.join("icons/calc-unit.svg").is_file());
-    assert_eq!(host.evaluate_inline_query("24 * 12", "dark")[0].copy_value, "288");
+    assert_eq!(
+        host.evaluate_inline_query("24 * 12", "dark")[0].copy_value,
+        "288"
+    );
 }

@@ -77,10 +77,8 @@ pub fn build_scripts_manager_view(
                     detail_md.push_str("\n\n## Arguments\n");
                     for arg in &sc.arguments {
                         let req = if arg.required { "required" } else { "optional" };
-                        detail_md.push_str(&format!(
-                            "\n- `{}` — {} ({req})",
-                            arg.id, arg.placeholder
-                        ));
+                        detail_md
+                            .push_str(&format!("\n- `{}` — {} ({req})", arg.id, arg.placeholder));
                     }
                 }
 
@@ -108,38 +106,39 @@ pub fn build_scripts_manager_view(
                     target: sc.path.display().to_string(),
                 });
 
-                let mut item = ListItemBuilder::new(format!("mgr-script:{}", sc.id), sc.title.clone())
-                    .subtitle(
-                        sc.package_name
-                            .clone()
-                            .unwrap_or_else(|| "Script Command".to_string()),
-                    )
-                    .icon(sc.badge_label())
-                    .filter_group(sc.mode.label())
-                    .keyword("script")
-                    .keyword(sc.mode.label())
-                    .accessory_tag(sc.mode.label(), SemanticTone::Neutral)
-                    .detail(detail_md, metadata)
-                    .actions(
-                        ActionPanelBuilder::new()
-                            .section(
-                                Some("Script"),
-                                vec![
-                                    ActionItem::new(
-                                        format!("script.run:{}", sc.id),
-                                        "Run Script Command",
-                                    )
-                                    .shortcut("Enter"),
-                                    ActionItem::new(
-                                        format!("script.copy-path:{}", sc.id),
-                                        "Copy Script Path",
-                                    )
-                                    .shortcut("Ctrl+Enter"),
-                                    ActionItem::new("scripts.reload", "Reload Script Commands"),
-                                ],
-                            )
-                            .build(),
-                    );
+                let mut item =
+                    ListItemBuilder::new(format!("mgr-script:{}", sc.id), sc.title.clone())
+                        .subtitle(
+                            sc.package_name
+                                .clone()
+                                .unwrap_or_else(|| "Script Command".to_string()),
+                        )
+                        .icon(sc.badge_label())
+                        .filter_group(sc.mode.label())
+                        .keyword("script")
+                        .keyword(sc.mode.label())
+                        .accessory_tag(sc.mode.label(), SemanticTone::Neutral)
+                        .detail(detail_md, metadata)
+                        .actions(
+                            ActionPanelBuilder::new()
+                                .section(
+                                    Some("Script"),
+                                    vec![
+                                        ActionItem::new(
+                                            format!("script.run:{}", sc.id),
+                                            "Run Script Command",
+                                        )
+                                        .shortcut("Enter"),
+                                        ActionItem::new(
+                                            format!("script.copy-path:{}", sc.id),
+                                            "Copy Script Path",
+                                        )
+                                        .shortcut("Ctrl+Enter"),
+                                        ActionItem::new("scripts.reload", "Reload Script Commands"),
+                                    ],
+                                )
+                                .build(),
+                        );
                 if let Some(icon_path) = &sc.icon_path {
                     item = item.icon_path(icon_path.display().to_string());
                 }

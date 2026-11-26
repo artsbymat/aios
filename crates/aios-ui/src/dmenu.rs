@@ -690,7 +690,8 @@ impl DmenuWindow {
         if let Some(rx) = self.stream_rx.take() {
             rx.close();
         }
-        self.image_cache.update(cx, |cache, cx| cache.clear(window, cx));
+        self.image_cache
+            .update(cx, |cache, cx| cache.clear(window, cx));
         self.corpus_snapshot = None;
         self.state.clear();
         if let Some(cb) = self.responder.take() {
@@ -1207,13 +1208,7 @@ impl Render for DmenuWindow {
                 .child(header)
                 .child(
                     if (self.state.is_loading || self.is_searching) && matched_items > 0 {
-                        loading_progress_bar(
-                            "aios-dmenu-header-loading",
-                            None,
-                            2.0,
-                            false,
-                            &theme,
-                        )
+                        loading_progress_bar("aios-dmenu-header-loading", None, 2.0, false, &theme)
                     } else {
                         div()
                             .w_full()

@@ -309,7 +309,11 @@ pub fn semantic_tag(label: &str, tone: SemanticTone, theme: &AiosTheme) -> Div {
         .flex_row()
         .items_center()
         .gap(px(6.0))
-        .pl(if bar_color.is_some() { px(6.0) } else { px(7.0) })
+        .pl(if bar_color.is_some() {
+            px(6.0)
+        } else {
+            px(7.0)
+        })
         .pr(px(7.0))
         .py(px(3.0))
         .rounded(theme.metrics.radius_xs)

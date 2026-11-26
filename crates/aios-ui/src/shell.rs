@@ -156,7 +156,11 @@ impl LauncherWindow {
             .evaluate_inline_query(&query, "system")
             .into_iter()
             .map(|r| {
-                let seed_query = query.trim().strip_prefix('=').map(str::trim).unwrap_or(query.trim());
+                let seed_query = query
+                    .trim()
+                    .strip_prefix('=')
+                    .map(str::trim)
+                    .unwrap_or(query.trim());
                 InlineRootResult {
                     id: r.id,
                     section_title: r.section_title,
@@ -177,10 +181,11 @@ impl LauncherWindow {
                 }
             })
             .collect();
-        let next_view = self
-            .root_search
-            .borrow_mut()
-            .build_root_view_with_inline(&query, &active_filter, &inline_results);
+        let next_view = self.root_search.borrow_mut().build_root_view_with_inline(
+            &query,
+            &active_filter,
+            &inline_results,
+        );
         let frame = self.state.current_mut();
         frame.view = next_view;
         frame.clamp_selection();
@@ -816,12 +821,10 @@ impl LauncherWindow {
                                     query,
                                 };
                                 let theme_mode = active_theme_name(cx);
-                                let host_res = win.plugin_host.borrow_mut().send_wasm_event(
-                                    &pid,
-                                    &cid,
-                                    &event,
-                                    theme_mode,
-                                );
+                                let host_res = win
+                                    .plugin_host
+                                    .borrow_mut()
+                                    .send_wasm_event(&pid, &cid, &event, theme_mode);
                                 if let PluginResponse::Render { view } = host_res.response {
                                     let frame = win.state.current_mut();
                                     frame.view = *view;
@@ -860,12 +863,12 @@ impl LauncherWindow {
                 )
             };
             cx.spawn(async move |this, cx| {
-                let res = cx
-                    .background_executor()
-                    .spawn(async move {
-                        aios_plugin_host::fetch_registry_index(&urls, &db, ttl, true)
-                    })
-                    .await;
+                let res =
+                    cx.background_executor()
+                        .spawn(async move {
+                            aios_plugin_host::fetch_registry_index(&urls, &db, ttl, true)
+                        })
+                        .await;
                 let _ = this.update(cx, |win, cx| {
                     match res {
                         Ok(index) => {
@@ -927,8 +930,7 @@ impl LauncherWindow {
                 let res = cx
                     .background_executor()
                     .spawn(async move {
-                        let index =
-                            aios_plugin_host::fetch_registry_index(&urls, &db, ttl, false)?;
+                        let index = aios_plugin_host::fetch_registry_index(&urls, &db, ttl, false)?;
                         let entry = index
                             .plugins
                             .iter()
@@ -2200,7 +2202,9 @@ impl Render for LauncherWindow {
             shell = shell.child(overlay);
         }
 
-        image_cache(self.image_cache.clone()).size_full().child(shell)
+        image_cache(self.image_cache.clone())
+            .size_full()
+            .child(shell)
     }
 }
 

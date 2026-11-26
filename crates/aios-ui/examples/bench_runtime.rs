@@ -156,6 +156,25 @@ fn main() {
     .expect("plugin host");
 
     let calc_dir = repo_root().join("plugins/com.aios.calculator");
+    if !calc_dir.join("plugin.wasm").is_file() {
+        let status = std::process::Command::new("cargo")
+            .args([
+                "build",
+                "--manifest-path",
+                calc_dir.join("Cargo.toml").to_str().expect("utf8 path"),
+                "--target",
+                "wasm32-wasip2",
+                "--release",
+            ])
+            .status()
+            .expect("build com.aios.calculator wasm");
+        assert!(status.success(), "wasm32-wasip2 build failed");
+        std::fs::copy(
+            calc_dir.join("target/wasm32-wasip2/release/aios_plugin_calculator.wasm"),
+            calc_dir.join("plugin.wasm"),
+        )
+        .expect("copy plugin.wasm");
+    }
     host.install_local_plugin(&calc_dir)
         .expect("install com.aios.calculator");
 

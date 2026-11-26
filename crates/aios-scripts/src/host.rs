@@ -7,9 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aios_core::AiosPaths;
-use aios_plugin_sdk::{
-    ConfirmAlert, PluginResponse, ToastMessage, ToastStyle, ViewNode,
-};
+use aios_plugin_sdk::{ConfirmAlert, PluginResponse, ToastMessage, ToastStyle, ViewNode};
 
 use crate::manager_view::build_scripts_manager_view;
 use crate::runner::{
@@ -153,9 +151,9 @@ impl ScriptHost {
     /// Finds a script by exact ID (`script:<stem>`) or bare stem (`<stem>`).
     #[must_use]
     pub fn find_script(&self, script_id: &str) -> Option<&ScriptCommand> {
-        self.scripts.iter().find(|s| {
-            s.id == script_id || s.id.strip_prefix("script:") == Some(script_id)
-        })
+        self.scripts
+            .iter()
+            .find(|s| s.id == script_id || s.id.strip_prefix("script:") == Some(script_id))
     }
 
     /// Runs all `ScriptMode::Inline` scripts once to populate Root Search inline summaries.
@@ -242,12 +240,14 @@ impl ScriptHost {
         self.record_outcome(&script, args, &outcome);
 
         let refresh_spec = if script.mode == ScriptMode::FullOutput && !outcome.timed_out {
-            script.refresh_time_secs.map(|interval_secs| ScriptRefreshSpec {
-                script_id: script.id.clone(),
-                frame_id: script_output_frame_id(&script.id),
-                args: args.to_vec(),
-                interval_secs,
-            })
+            script
+                .refresh_time_secs
+                .map(|interval_secs| ScriptRefreshSpec {
+                    script_id: script.id.clone(),
+                    frame_id: script_output_frame_id(&script.id),
+                    args: args.to_vec(),
+                    interval_secs,
+                })
         } else {
             None
         };
@@ -296,12 +296,14 @@ impl ScriptHost {
                 .unwrap_or(ScriptRefreshStatus::None)
         });
         let detail = build_full_output_detail_view(&script, &outcome, status);
-        let refresh_spec = script.refresh_time_secs.map(|interval_secs| ScriptRefreshSpec {
-            script_id: script.id.clone(),
-            frame_id: script_output_frame_id(&script.id),
-            args: effective_args,
-            interval_secs,
-        });
+        let refresh_spec = script
+            .refresh_time_secs
+            .map(|interval_secs| ScriptRefreshSpec {
+                script_id: script.id.clone(),
+                frame_id: script_output_frame_id(&script.id),
+                args: effective_args,
+                interval_secs,
+            });
 
         ScriptActionResult {
             response: PluginResponse::render(detail),
@@ -320,7 +322,11 @@ impl ScriptHost {
     ) -> Option<ViewNode> {
         let script = self.find_script(script_id)?.clone();
         self.record_outcome(&script, args, &outcome);
-        Some(build_full_output_detail_view(&script, &outcome, refresh_status))
+        Some(build_full_output_detail_view(
+            &script,
+            &outcome,
+            refresh_status,
+        ))
     }
 
     /// Re-renders the last captured `fullOutput` DetailView with an updated auto-refresh status
@@ -333,10 +339,19 @@ impl ScriptHost {
     ) -> Option<ViewNode> {
         let script = self.find_script(script_id)?;
         let outcome = self.last_script_outcomes.get(&script.id)?;
-        Some(build_full_output_detail_view(script, outcome, refresh_status))
+        Some(build_full_output_detail_view(
+            script,
+            outcome,
+            refresh_status,
+        ))
     }
 
-    fn record_outcome(&mut self, script: &ScriptCommand, args: &[String], outcome: &ScriptRunOutcome) {
+    fn record_outcome(
+        &mut self,
+        script: &ScriptCommand,
+        args: &[String],
+        outcome: &ScriptRunOutcome,
+    ) {
         let combined_output = if outcome.stderr.trim().is_empty() {
             outcome.stdout.clone()
         } else if outcome.stdout.trim().is_empty() {

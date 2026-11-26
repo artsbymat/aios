@@ -108,7 +108,11 @@ impl ScriptCommand {
     /// Returns a crisp 1-4 character badge fallback for rows without a resolved image icon.
     #[must_use]
     pub fn badge_label(&self) -> String {
-        if let Some(raw) = self.icon.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        if let Some(raw) = self
+            .icon
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             && self.icon_path.is_none()
             && !looks_like_icon_path(raw)
             && raw.chars().count() <= 4
@@ -296,14 +300,12 @@ pub fn parse_script_metadata(path: &Path, content: &str) -> Option<ScriptCommand
 }
 
 fn is_supported_icon_ext(path: &Path) -> bool {
-    path.extension()
-        .and_then(OsStr::to_str)
-        .is_some_and(|ext| {
-            matches!(
-                ext.to_ascii_lowercase().as_str(),
-                "svg" | "png" | "jpg" | "jpeg" | "webp"
-            )
-        })
+    path.extension().and_then(OsStr::to_str).is_some_and(|ext| {
+        matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "svg" | "png" | "jpg" | "jpeg" | "webp"
+        )
+    })
 }
 
 fn looks_like_icon_path(spec: &str) -> bool {
@@ -631,9 +633,7 @@ pub fn build_full_output_detail_view(
         } => {
             let (label, tone) = if due_to_failures {
                 (
-                    format!(
-                        "Paused ({MAX_CONSECUTIVE_REFRESH_FAILURES} errors) · #{run_count}"
-                    ),
+                    format!("Paused ({MAX_CONSECUTIVE_REFRESH_FAILURES} errors) · #{run_count}"),
                     SemanticTone::Warning,
                 )
             } else {

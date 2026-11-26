@@ -363,9 +363,7 @@ mod tests {
         // Exceed SMALL_SLAB_BYTES (64 KiB) to exercise transition from small slab to bulk slab.
         let count = 3_000usize;
         for i in 0..count {
-            corpus.push(&format!(
-                "/home/rahmat/projects/aios/crates/file_{i:05}.rs"
-            ));
+            corpus.push(&format!("/home/rahmat/projects/aios/crates/file_{i:05}.rs"));
         }
 
         assert_eq!(corpus.len(), count);
