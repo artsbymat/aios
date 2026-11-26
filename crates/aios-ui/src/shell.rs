@@ -164,7 +164,7 @@ impl LauncherWindow {
                     title: r.title,
                     subtitle: r.subtitle,
                     badge: r.badge,
-                    icon_path: None,
+                    icon_path: r.icon_path,
                     tag_label: r.tag_label,
                     copy_action_id: r.copy_action_id,
                     copy_action_title: format!("Copy {}", r.copy_value),
@@ -1287,6 +1287,26 @@ impl LauncherWindow {
                             .child(active_label.to_owned()),
                     )
                     .child(keycap("Ctrl+F", theme)),
+            );
+        }
+
+        if let Some((plugin_id, _)) = &frame.plugin_session
+            && let Some((Some(icon_path), badge)) =
+                self.plugin_host.borrow().plugin_icon_for(plugin_id)
+        {
+            header_row = header_row.child(
+                div()
+                    .id("aios-active-plugin-logo")
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::components::app_icon_or_badge(
+                        Some(&icon_path),
+                        &badge,
+                        false,
+                        theme,
+                    )),
             );
         }
 

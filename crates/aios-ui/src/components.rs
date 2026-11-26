@@ -354,8 +354,8 @@ pub fn render_accessory(accessory: &Accessory, theme: &AiosTheme) -> AnyElement 
     }
 }
 
-/// Renders a resolved XDG application icon (PNG/SVG) inside a 24x24px frame, falling back
-/// cleanly to [`item_badge`] when no icon file is present or if decoding fails.
+/// Renders a resolved application or embedded plugin icon (PNG/SVG) inside a 24x24px frame,
+/// falling back cleanly to [`item_badge`] when no icon file is present or if decoding fails.
 pub fn app_icon_or_badge(
     icon_path: Option<&str>,
     fallback_label: &str,
@@ -363,9 +363,13 @@ pub fn app_icon_or_badge(
     theme: &AiosTheme,
 ) -> AnyElement {
     if let Some(path) = icon_path {
-        let pb = PathBuf::from(path);
         let label_owned = fallback_label.to_owned();
         let theme_clone = theme.clone();
+        let image_el = if let Some(asset_path) = path.strip_prefix("asset://") {
+            img(gpui::SharedString::from(asset_path.to_owned()))
+        } else {
+            img(PathBuf::from(path))
+        };
         return div()
             .w(px(24.0))
             .h(px(24.0))
@@ -376,7 +380,7 @@ pub fn app_icon_or_badge(
             .rounded(theme.metrics.radius_xs)
             .overflow_hidden()
             .child(
-                img(pb)
+                image_el
                     .w(px(22.0))
                     .h(px(22.0))
                     .object_fit(ObjectFit::Contain)

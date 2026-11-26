@@ -296,7 +296,7 @@ Every interactive component defines five explicit states: `default`, `hover`, `a
 
 ### 1. Header Search Bar & Inline Arguments
 
-- Left slot: Back button (`←`, `Esc` / `Backspace` when query empty) when navigation depth > 1; otherwise current view icon.
+- Left slot: Back button (`←`, `Esc`) when navigation depth > 1; otherwise current view icon.
 - Center slot: Unbordered full-flex text input (`searchInput` 16px). When a selected command declares inline arguments, `Tab` activates crisp `4px`-radius argument pill inputs inline right next to the command badge.
 - Right slot: Optional `List.Dropdown` / `Grid.Dropdown` filter selector with chevron and `Ctrl+F` shortcut hint.
 - Loading state: Thin `2px` deterministic/indeterminate horizontal progress bar running cleanly along the `1px` bottom divider of the header (zero layout shift, stops cleanly under reduced motion).

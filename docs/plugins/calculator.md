@@ -153,7 +153,7 @@ Implemented in Pure Rust using Howard Hinnant's exact civil Gregorian calendar a
 
 ### Root Search (Inline Result)
 
-- `Enter`: Copy the **Copy Value** to the Wayland clipboard, save the entry to SQLite history, and display a confirmation HUD.
+- `Enter`: Copy the **Copy Value** to the Wayland clipboard, save the entry to SQLite history, display a confirmation HUD, and close the launcher window.
 - `Ctrl+Enter`: Open the full **Calculator & Converter** view seeded with the current expression.
 - `Ctrl+K`: Open the Action Panel to inspect all available actions.
 

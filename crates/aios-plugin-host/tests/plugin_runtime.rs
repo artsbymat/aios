@@ -840,3 +840,38 @@ fn shipped_palette_grid_wasm_saves_custom_swatches_and_reloads() {
         search_ev.response
     );
 }
+
+#[test]
+fn inline_calculator_copy_action_copies_and_closes_main_window() {
+    let tmp = TempDir::new().expect("temp dir");
+    let (_paths, _db, mut host) = test_host(&tmp);
+
+    let inline = host.evaluate_inline_query("10*30", "dark");
+    assert_eq!(inline.len(), 1);
+    assert_eq!(inline[0].copy_value, "300");
+
+    let dispatched = host
+        .dispatch_host_action(&inline[0].copy_action_id, &[], None, "dark")
+        .expect("inline copy action handled");
+    assert!(matches!(
+        dispatched.response,
+        PluginResponse::CopyToClipboard { ref text, .. } if text == "300"
+    ));
+    assert!(
+        dispatched
+            .side_effects
+            .iter()
+            .any(|e| matches!(e, aios_plugin_host::HostSideEffect::CloseMainWindow)),
+        "expected CloseMainWindow side effect for Root Search inline copy, got {:?}",
+        dispatched.side_effects
+    );
+
+    let (icon, badge) = host
+        .plugin_icon_for("com.aios.calculator")
+        .expect("calculator plugin icon");
+    assert_eq!(
+        icon.as_deref(),
+        Some("asset://icons/plugins/calculator.svg")
+    );
+    assert_eq!(badge, "=");
+}

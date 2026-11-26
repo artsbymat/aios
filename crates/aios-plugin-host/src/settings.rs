@@ -214,7 +214,7 @@ pub fn build_settings_home_view_with_first_party(
                     );
                 }
 
-                ListItemBuilder::new(format!("fp:{}", m.id), m.name.clone())
+                let mut item = ListItemBuilder::new(format!("fp:{}", m.id), m.name.clone())
                     .subtitle(format!("v{} · {}", m.version, m.id))
                     .icon(*badge)
                     .filter_group("plugins")
@@ -238,8 +238,11 @@ pub fn build_settings_home_view_with_first_party(
                             },
                         ],
                     )
-                    .actions(actions.build())
-                    .build()
+                    .actions(actions.build());
+                if let Some(icon_path) = &m.icon {
+                    item = item.icon_path(icon_path.clone());
+                }
+                item.build()
             })
             .collect();
 

@@ -216,7 +216,11 @@ fn calculator_plugin_inline_prefix_history_and_preferences_round_trip() {
         list.sections
             .iter()
             .any(|s| s.title.as_deref() == Some("Recent Calculations")
-                && s.items.iter().any(|i| i.title == "300"))
+                && s.items
+                    .iter()
+                    .any(|i| i.title == "300"
+                        && i.icon_path.as_deref()
+                            == Some("asset://icons/plugins/calc-arithmetic.svg")))
     );
 
     // SearchTextChanged evaluates live inside Calculator view.
@@ -235,6 +239,10 @@ fn calculator_plugin_inline_prefix_history_and_preferences_round_trip() {
         panic!("expected ListView");
     };
     assert_eq!(live_list.sections[0].items[0].title, "1.5 rem");
+    assert_eq!(
+        live_list.sections[0].items[0].icon_path.as_deref(),
+        Some("asset://icons/plugins/calc-unit.svg")
+    );
 
     // Clear history empties saved records.
     let cleared = plugin.handle_event(

@@ -16,14 +16,35 @@ pub const MONO_FAMILY: &str = "JetBrains Mono";
 const INTER_VARIABLE_TTF: &[u8] = include_bytes!("../../../assets/fonts/InterVariable.ttf");
 const JETBRAINS_MONO_VARIABLE_TTF: &[u8] =
     include_bytes!("../../../assets/fonts/JetBrainsMonoVariable.ttf");
+const CALCULATOR_PLUGIN_ICON_SVG: &[u8] =
+    include_bytes!("../../../assets/icons/plugins/calculator.svg");
+const CALC_ARITHMETIC_ICON_SVG: &[u8] =
+    include_bytes!("../../../assets/icons/plugins/calc-arithmetic.svg");
+const CALC_BASE_ICON_SVG: &[u8] =
+    include_bytes!("../../../assets/icons/plugins/calc-base.svg");
+const CALC_UNIT_ICON_SVG: &[u8] =
+    include_bytes!("../../../assets/icons/plugins/calc-unit.svg");
+const CALC_CURRENCY_ICON_SVG: &[u8] =
+    include_bytes!("../../../assets/icons/plugins/calc-currency.svg");
+const CALC_DATE_ICON_SVG: &[u8] =
+    include_bytes!("../../../assets/icons/plugins/calc-date.svg");
+const CALC_TIMEZONE_ICON_SVG: &[u8] =
+    include_bytes!("../../../assets/icons/plugins/calc-timezone.svg");
 
 // GPUI's `SvgRenderer` queries these bundled fallback paths from the app's `AssetRegistry`
 // when rasterizing SVG desktop icons. Serving AIOS's embedded fonts resolves them cleanly
 // without missing-font warnings.
 const GPUI_SVG_SANS_PATH: &str = "fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf";
 const GPUI_SVG_MONO_PATH: &str = "fonts/lilex/Lilex-Regular.ttf";
+const CALCULATOR_ICON_ASSET_PATH: &str = "icons/plugins/calculator.svg";
+const CALC_ARITHMETIC_ASSET_PATH: &str = "icons/plugins/calc-arithmetic.svg";
+const CALC_BASE_ASSET_PATH: &str = "icons/plugins/calc-base.svg";
+const CALC_UNIT_ASSET_PATH: &str = "icons/plugins/calc-unit.svg";
+const CALC_CURRENCY_ASSET_PATH: &str = "icons/plugins/calc-currency.svg";
+const CALC_DATE_ASSET_PATH: &str = "icons/plugins/calc-date.svg";
+const CALC_TIMEZONE_ASSET_PATH: &str = "icons/plugins/calc-timezone.svg";
 
-/// In-memory GPUI [`AssetSource`] serving AIOS's embedded fonts for `SvgRenderer`.
+/// In-memory GPUI [`AssetSource`] serving AIOS's embedded fonts and first-party plugin icons.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AiosAssetSource;
 
@@ -36,6 +57,13 @@ impl AssetSource for AiosAssetSource {
             GPUI_SVG_MONO_PATH | "fonts/JetBrainsMonoVariable.ttf" => {
                 Ok(Some(Cow::Borrowed(JETBRAINS_MONO_VARIABLE_TTF)))
             }
+            CALCULATOR_ICON_ASSET_PATH => Ok(Some(Cow::Borrowed(CALCULATOR_PLUGIN_ICON_SVG))),
+            CALC_ARITHMETIC_ASSET_PATH => Ok(Some(Cow::Borrowed(CALC_ARITHMETIC_ICON_SVG))),
+            CALC_BASE_ASSET_PATH => Ok(Some(Cow::Borrowed(CALC_BASE_ICON_SVG))),
+            CALC_UNIT_ASSET_PATH => Ok(Some(Cow::Borrowed(CALC_UNIT_ICON_SVG))),
+            CALC_CURRENCY_ASSET_PATH => Ok(Some(Cow::Borrowed(CALC_CURRENCY_ICON_SVG))),
+            CALC_DATE_ASSET_PATH => Ok(Some(Cow::Borrowed(CALC_DATE_ICON_SVG))),
+            CALC_TIMEZONE_ASSET_PATH => Ok(Some(Cow::Borrowed(CALC_TIMEZONE_ICON_SVG))),
             _ => Ok(None),
         }
     }
@@ -46,6 +74,13 @@ impl AssetSource for AiosAssetSource {
             GPUI_SVG_MONO_PATH,
             "fonts/InterVariable.ttf",
             "fonts/JetBrainsMonoVariable.ttf",
+            CALCULATOR_ICON_ASSET_PATH,
+            CALC_ARITHMETIC_ASSET_PATH,
+            CALC_BASE_ASSET_PATH,
+            CALC_UNIT_ASSET_PATH,
+            CALC_CURRENCY_ASSET_PATH,
+            CALC_DATE_ASSET_PATH,
+            CALC_TIMEZONE_ASSET_PATH,
         ];
         Ok(all
             .into_iter()
@@ -108,5 +143,20 @@ mod tests {
         let listed = source.list("fonts/").expect("list fonts");
         assert!(listed.iter().any(|p| p.as_ref() == GPUI_SVG_SANS_PATH));
         assert!(listed.iter().any(|p| p.as_ref() == GPUI_SVG_MONO_PATH));
+        for icon_path in [
+            CALCULATOR_ICON_ASSET_PATH,
+            CALC_ARITHMETIC_ASSET_PATH,
+            CALC_BASE_ASSET_PATH,
+            CALC_UNIT_ASSET_PATH,
+            CALC_CURRENCY_ASSET_PATH,
+            CALC_DATE_ASSET_PATH,
+            CALC_TIMEZONE_ASSET_PATH,
+        ] {
+            let svg = source
+                .load(icon_path)
+                .expect("load plugin icon")
+                .expect("plugin icon exists");
+            assert!(svg.starts_with(b"<svg"), "invalid SVG header for {icon_path}");
+        }
     }
 }

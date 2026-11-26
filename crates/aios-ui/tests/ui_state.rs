@@ -484,3 +484,42 @@ fn palette_plugin_enter_exit_and_form_save_preserve_all_keybinds() {
         Some("#2459A8")
     );
 }
+
+#[test]
+fn backspace_on_empty_plugin_list_search_does_not_pop_to_root() {
+    let mut state = LauncherState::new(build_root_showcase_frame());
+    let calc_view = ViewNode::List(aios_core::view::ListView {
+        navigation_title: Some("Calculator & Converter".to_string()),
+        search_placeholder: Some("Type expression...".to_string()),
+        filtering: aios_core::view::FilterMode::Plugin,
+        is_loading: false,
+        loading_message: None,
+        is_showing_detail: true,
+        filter_dropdown: None,
+        inline_arguments: Vec::new(),
+        sections: Vec::new(),
+        empty_view: None,
+    });
+    state.push(
+        NavFrame::new("plugin:com.aios.calculator:calculator", calc_view)
+            .with_plugin_session("com.aios.calculator", "calculator"),
+    );
+    assert_eq!(state.depth(), 2);
+
+    state.insert_text("5");
+    assert_eq!(state.current().search_query, "5");
+    state.handle_backspace();
+    assert!(state.current().search_query.is_empty());
+    assert_eq!(state.depth(), 2);
+
+    // Extra Backspace presses on empty search input must stay inside the plugin view.
+    state.handle_backspace();
+    state.handle_backspace();
+    assert_eq!(state.depth(), 2);
+    assert_eq!(state.current().id, "plugin:com.aios.calculator:calculator");
+
+    // Esc still pops cleanly back to Root.
+    assert_eq!(state.handle_escape(), ShellEffect::None);
+    assert_eq!(state.depth(), 1);
+    assert_eq!(state.current().id, "root.showcase");
+}

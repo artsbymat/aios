@@ -792,7 +792,7 @@ impl LauncherState {
         }
     }
 
-    /// Handles `Backspace` in the currently focused input (or pops view when search is empty).
+    /// Handles `Backspace` in the currently focused input without popping search-based views.
     pub fn handle_backspace(&mut self) {
         if let Some(ActiveOverlay::ActionPanel {
             filter_query,
@@ -829,9 +829,7 @@ impl LauncherState {
             }
             ViewNode::List(_) | ViewNode::Grid(_) => match frame.header_focus {
                 HeaderFocus::Search => {
-                    if frame.search_query.is_empty() {
-                        self.pop();
-                    } else {
+                    if !frame.search_query.is_empty() {
                         frame.search_query.pop();
                         frame.selected_index = 0;
                         frame.clamp_selection();

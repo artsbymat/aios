@@ -141,6 +141,29 @@ impl PluginHost {
             .map(Box::as_ref)
     }
 
+    /// Resolves `(icon_path, fallback_badge)` for any active first-party or WASM plugin.
+    #[must_use]
+    pub fn plugin_icon_for(&self, plugin_id: &str) -> Option<(Option<String>, String)> {
+        if let Some(fp) = self.find_first_party(plugin_id) {
+            return Some((fp.icon_asset().map(str::to_owned), fp.badge().to_string()));
+        }
+        if let Some(wasm) = self.find_plugin(plugin_id) {
+            let icon = wasm
+                .icon_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned());
+            let badge = wasm
+                .manifest
+                .name
+                .chars()
+                .take(2)
+                .collect::<String>()
+                .to_uppercase();
+            return Some((icon, badge));
+        }
+        None
+    }
+
     /// Evaluates opt-in inline Root Search providers (such as Calculator) gated by sub-microsecond
     /// host checks so normal app queries incur zero plugin overhead.
     #[must_use]
@@ -235,7 +258,7 @@ impl PluginHost {
                     title: cmd.title.clone(),
                     subtitle: cmd.subtitle.clone().unwrap_or_else(|| m.name.clone()),
                     badge: plugin.badge().to_string(),
-                    icon_path: None,
+                    icon_path: plugin.icon_asset().map(str::to_owned),
                     keywords,
                     filter_group: "plugins",
                     action_id: format!("plugin.run:{}:{}", m.id, cmd.id),
@@ -505,7 +528,15 @@ impl PluginHost {
             let fp = self.find_first_party(plugin_id)?;
             let env = PluginEnv::new(plugin_id, theme_mode, Arc::clone(&self.db));
             let response = fp.handle_inline_action(inner_action, &env)?;
-            return Some(HostActionResult::response_only(response));
+            let mut side_effects = Vec::new();
+            if matches!(response, PluginResponse::CopyToClipboard { .. }) {
+                side_effects.push(HostSideEffect::CloseMainWindow);
+            }
+            return Some(HostActionResult {
+                response,
+                side_effects,
+                active_plugin_session: None,
+            });
         }
 
         if let Some(rest) = action_id.strip_prefix("plugin.run-query:") {

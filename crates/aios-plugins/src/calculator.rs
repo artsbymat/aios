@@ -24,6 +24,7 @@ use crate::{FirstPartyPlugin, InlinePluginResult, PluginEnv, now_epoch_secs};
 
 pub const CALCULATOR_PLUGIN_ID: &str = "com.aios.calculator";
 pub const CALCULATOR_COMMAND_ID: &str = "calculator";
+pub const CALCULATOR_ICON_ASSET: &str = "asset://icons/plugins/calculator.svg";
 const HISTORY_STORAGE_KEY: &str = "history_v1";
 const CUSTOM_RATES_STORAGE_KEY: &str = "currency_rates_v1";
 const MAX_HISTORY_ENTRIES: usize = 50;
@@ -98,6 +99,32 @@ impl CalcCategory {
             Self::Currency => "Currency",
             Self::Date => "Date",
             Self::Timezone => "Timezone",
+        }
+    }
+
+    /// Embedded monochrome category icon used for Recent Calculations rows so the primary
+    /// Signal Copper `calculator.svg` logo stays visually focused on Live Result & Root Search.
+    #[must_use]
+    pub const fn history_icon_asset(self) -> &'static str {
+        match self {
+            Self::Arithmetic => "asset://icons/plugins/calc-arithmetic.svg",
+            Self::Base => "asset://icons/plugins/calc-base.svg",
+            Self::Unit => "asset://icons/plugins/calc-unit.svg",
+            Self::Currency => "asset://icons/plugins/calc-currency.svg",
+            Self::Date => "asset://icons/plugins/calc-date.svg",
+            Self::Timezone => "asset://icons/plugins/calc-timezone.svg",
+        }
+    }
+
+    #[must_use]
+    pub const fn badge_fallback(self) -> &'static str {
+        match self {
+            Self::Arithmetic => "=",
+            Self::Base => "0x",
+            Self::Unit => "UN",
+            Self::Currency => "$",
+            Self::Date => "DT",
+            Self::Timezone => "TZ",
         }
     }
 }
@@ -209,7 +236,8 @@ impl CalculatorPlugin {
                     let encoded = encode_calc_payload(&eval.expression, &eval.copy_value);
                     let live_item = ListItemBuilder::new("calc-live-result", eval.formatted.clone())
                         .subtitle(format!("{}  ·  {}", eval.expression, eval.detail_subtitle))
-                        .icon("=")
+                        .icon(eval.category.badge_fallback())
+                        .icon_path(eval.category.history_icon_asset())
                         .accessory_tag(eval.category.label(), SemanticTone::Accent)
                         .detail(md, metadata)
                         .actions(
@@ -280,7 +308,8 @@ impl CalculatorPlugin {
                     let encoded = encode_calc_payload(&rec.expression, &rec.result);
                     ListItemBuilder::new(rec.id.clone(), rec.result.clone())
                         .subtitle(rec.expression.clone())
-                        .icon("=")
+                        .icon(rec.category.badge_fallback())
+                        .icon_path(rec.category.history_icon_asset())
                         .accessory_tag(rec.category.label(), SemanticTone::Neutral)
                         .detail(
                             format!(
@@ -357,7 +386,7 @@ impl FirstPartyPlugin for CalculatorPlugin {
             description: "Inline math, hex/bin/octal, unit, CSS, date/timezone, and offline currency converter.".to_string(),
             author: "AIOS".to_string(),
             min_aios_version: Some("0.1.0".to_string()),
-            icon: None,
+            icon: Some(CALCULATOR_ICON_ASSET.to_string()),
             entry: "builtin:calculator".to_string(),
             capabilities: PluginCapabilities {
                 clipboard_write: true,
@@ -419,6 +448,10 @@ impl FirstPartyPlugin for CalculatorPlugin {
 
     fn badge(&self) -> &'static str {
         "="
+    }
+
+    fn icon_asset(&self) -> Option<&'static str> {
+        Some(CALCULATOR_ICON_ASSET)
     }
 
     fn init_command(
@@ -540,6 +573,7 @@ impl FirstPartyPlugin for CalculatorPlugin {
             title: eval.formatted,
             subtitle: format!("{}  ·  {}", eval.expression, eval.detail_subtitle),
             badge: "=".to_string(),
+            icon_path: Some(CALCULATOR_ICON_ASSET.to_string()),
             tag_label: eval.category.label().to_string(),
             copy_value: eval.copy_value,
             copy_action_id: format!("plugin.inline:{CALCULATOR_PLUGIN_ID}:copy:{encoded}"),

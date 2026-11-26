@@ -25,6 +25,7 @@ pub struct InlinePluginResult {
     pub title: String,
     pub subtitle: String,
     pub badge: String,
+    pub icon_path: Option<String>,
     pub tag_label: String,
     pub copy_value: String,
     pub copy_action_id: String,
@@ -91,6 +92,11 @@ pub trait FirstPartyPlugin: Send + Sync + std::fmt::Debug {
 
     fn badge(&self) -> &'static str {
         "PL"
+    }
+
+    /// Optional embedded icon asset URI (for example `"asset://icons/plugins/calculator.svg"`).
+    fn icon_asset(&self) -> Option<&'static str> {
+        None
     }
 
     fn init_command(
