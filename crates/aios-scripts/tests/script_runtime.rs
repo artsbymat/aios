@@ -233,3 +233,110 @@ fn script_custom_icons_resolve_relative_absolute_xdg_and_badge_fallback() {
         .expect("manager xdg item");
     assert_eq!(mgr_xdg.icon_path.as_deref(), xdg_svg.to_str());
 }
+
+#[test]
+fn full_output_refresh_time_clamps_preserves_args_and_updates_in_place() {
+    use aios_scripts::{
+        MAX_CONSECUTIVE_REFRESH_FAILURES, MIN_REFRESH_INTERVAL_SECS, ScriptRefreshStatus,
+        execute_script_command,
+    };
+    use std::time::Duration;
+
+    let tmp = TempDir::new().expect("temp dir");
+    let paths = temp_paths(&tmp);
+    let scripts_dir = paths.scripts_dir();
+    let counter_file = tmp.path().join("count.txt");
+
+    fs::write(
+        scripts_dir.join("watch-counter.sh"),
+        format!(
+            "#!/usr/bin/env sh\n# @aios.schemaVersion 1\n# @aios.title Watch Counter\n# @aios.mode fullOutput\n# @aios.refreshTime 2s\nCOUNT=$(cat \"{cf}\" 2>/dev/null || echo 0)\nNEXT=$((COUNT + 1))\necho \"$NEXT\" > \"{cf}\"\necho \"tick=$NEXT arg=$1\"\n",
+            cf = counter_file.display()
+        ),
+    )
+    .expect("write watch script");
+
+    fs::write(
+        scripts_dir.join("clamp-zero.sh"),
+        "#!/usr/bin/env sh\n# @aios.schemaVersion 1\n# @aios.title Clamp Zero\n# @aios.mode fullOutput\n# @aios.refreshTime 0s\necho ok\n",
+    )
+    .expect("write clamp script");
+
+    let mut host = ScriptHost::new(paths);
+
+    // 0s is clamped to MIN_REFRESH_INTERVAL_SECS (1s) to prevent fork storms.
+    let clamped = host.find_script("clamp-zero").expect("clamp script");
+    assert_eq!(clamped.refresh_time_secs, Some(MIN_REFRESH_INTERVAL_SECS));
+
+    // Initial run pushes DetailView and emits ScriptRefreshSpec with interval_secs=2 and preserved args.
+    let first = host.run_script("script:watch-counter", &["hello".to_string()], false);
+    let spec = first.refresh_spec.expect("refresh spec emitted");
+    assert_eq!(spec.interval_secs, 2);
+    assert_eq!(spec.args, vec!["hello".to_string()]);
+    assert!(matches!(
+        first.response,
+        PluginResponse::Push { ref view, .. }
+            if matches!(view.as_ref(), ViewNode::Detail(d) if d.markdown.contains("tick=1 arg=hello"))
+    ));
+
+    // Manual `script.rerun:` updates in place (Render, not Push) and preserves `hello` without re-passing args.
+    let rerun = host
+        .dispatch_action("script.rerun:script:watch-counter", &[])
+        .expect("rerun action");
+    assert!(matches!(
+        rerun.response,
+        PluginResponse::Render { ref view }
+            if matches!(view.as_ref(), ViewNode::Detail(d) if d.markdown.contains("tick=2 arg=hello"))
+    ));
+
+    // Background tick records new output and updates metadata + Copy Output buffer.
+    let sc = host.find_script("watch-counter").expect("script").clone();
+    let (tick_outcome, _) = execute_script_command(&sc, &spec.args, Duration::from_secs(5));
+    let updated_view = host
+        .record_refresh_tick(
+            &sc.id,
+            &spec.args,
+            tick_outcome,
+            ScriptRefreshStatus::Active {
+                interval_secs: 2,
+                run_count: 3,
+            },
+        )
+        .expect("updated view");
+    let ViewNode::Detail(detail) = updated_view else {
+        panic!("expected DetailView");
+    };
+    assert!(detail.markdown.contains("tick=3 arg=hello"));
+    assert!(
+        detail
+            .actions
+            .sections
+            .iter()
+            .flat_map(|s| &s.actions)
+            .any(|a| a.id == "script.toggle-refresh:script:watch-counter"
+                && a.title == "Pause Auto-Refresh")
+    );
+
+    // Paused after consecutive failures switches action label to Resume Auto-Refresh.
+    let paused_view = host
+        .render_detail_with_refresh_status(
+            &sc.id,
+            ScriptRefreshStatus::Paused {
+                interval_secs: 2,
+                run_count: 3 + u64::from(MAX_CONSECUTIVE_REFRESH_FAILURES),
+                due_to_failures: true,
+            },
+        )
+        .expect("paused view");
+    let ViewNode::Detail(paused_detail) = paused_view else {
+        panic!("expected paused DetailView");
+    };
+    assert!(
+        paused_detail
+            .actions
+            .sections
+            .iter()
+            .flat_map(|s| &s.actions)
+            .any(|a| a.title == "Resume Auto-Refresh")
+    );
+}

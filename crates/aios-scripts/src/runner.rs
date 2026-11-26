@@ -13,6 +13,33 @@ use aios_plugin_sdk::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Minimum allowed auto-refresh interval for `# @aios.refreshTime` (prevents fork storms).
+pub const MIN_REFRESH_INTERVAL_SECS: u64 = 1;
+
+/// Number of consecutive failed or timed-out auto-refresh runs before pausing automatically.
+pub const MAX_CONSECUTIVE_REFRESH_FAILURES: u8 = 3;
+
+/// Live auto-refresh state displayed in `fullOutput` DetailView metadata and ActionPanel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptRefreshStatus {
+    None,
+    Active {
+        interval_secs: u64,
+        run_count: u64,
+    },
+    Paused {
+        interval_secs: u64,
+        run_count: u64,
+        due_to_failures: bool,
+    },
+}
+
+/// Canonical navigation frame ID for a `fullOutput` Script Command DetailView.
+#[must_use]
+pub fn script_output_frame_id(script_id: &str) -> String {
+    format!("script-output:{script_id}")
+}
+
 /// Output presentation mode declared via `# @aios.mode <mode>`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -330,7 +357,7 @@ fn resolve_local_script_icon(script_path: &Path, raw: &str) -> Option<PathBuf> {
 
 fn parse_refresh_duration(raw: &str) -> Option<u64> {
     let s = raw.trim().to_ascii_lowercase();
-    if let Some(num) = s.strip_suffix('s') {
+    let parsed = if let Some(num) = s.strip_suffix('s') {
         num.trim().parse::<u64>().ok()
     } else if let Some(num) = s.strip_suffix('m') {
         num.trim().parse::<u64>().ok().map(|v| v.saturating_mul(60))
@@ -341,7 +368,8 @@ fn parse_refresh_duration(raw: &str) -> Option<u64> {
             .map(|v| v.saturating_mul(3600))
     } else {
         s.parse::<u64>().ok()
-    }
+    };
+    parsed.map(|secs| secs.max(MIN_REFRESH_INTERVAL_SECS))
 }
 
 /// Runs a Script Command with a hard wall-clock timeout and maps its output to a [`PluginResponse`].
@@ -509,69 +537,152 @@ fn map_outcome_to_response(script: &ScriptCommand, outcome: &ScriptRunOutcome) -
             }
         }
         ScriptMode::FullOutput => {
-            let mut md = format!("# {}\n\n", script.title);
-            if let Some(desc) = &script.description {
-                md.push_str(desc);
-                md.push_str("\n\n");
-            }
-            if !outcome.stdout.trim().is_empty() {
-                md.push_str("## Output\n\n```text\n");
-                md.push_str(outcome.stdout.trim_end());
-                md.push_str("\n```\n\n");
-            }
-            if !outcome.stderr.trim().is_empty() {
-                md.push_str("## Standard Error\n\n```text\n");
-                md.push_str(outcome.stderr.trim_end());
-                md.push_str("\n```\n\n");
-            }
-            if outcome.stdout.trim().is_empty() && outcome.stderr.trim().is_empty() {
-                md.push_str("_(Script produced no output.)_\n");
-            }
-
-            let status_tone = if outcome.succeeded() {
-                SemanticTone::Success
-            } else {
-                SemanticTone::Danger
-            };
-            let status_label = match outcome.exit_code {
-                Some(0) => "Exit 0 (OK)".to_string(),
-                Some(code) => format!("Exit {code}"),
-                None => "Terminated".to_string(),
-            };
-
-            let detail = DetailViewBuilder::new(script.title.clone(), md)
-                .metadata(vec![
-                    MetadataEntry::TagList {
-                        title: "Status".to_string(),
-                        tags: vec![(status_label, status_tone)],
-                    },
-                    MetadataEntry::Label {
-                        title: "Duration".to_string(),
-                        text: format!("{} ms", outcome.duration_ms),
-                    },
-                    MetadataEntry::Label {
-                        title: "Mode".to_string(),
-                        text: script.mode.label().to_string(),
-                    },
-                    MetadataEntry::Separator,
-                    MetadataEntry::Link {
-                        title: "Script Path".to_string(),
-                        text: script.path.display().to_string(),
-                        target: script.path.display().to_string(),
-                    },
-                ])
-                .actions(ActionPanel::from_actions(vec![
-                    ActionItem::new(format!("script.copy-output:{}", script.id), "Copy Output")
-                        .shortcut("Enter"),
-                    ActionItem::new(format!("script.run:{}", script.id), "Re-run Script")
-                        .shortcut("Ctrl+Enter"),
-                    ActionItem::new("nav.pop", "Back to Root").shortcut("Esc"),
-                ]))
-                .build();
-
-            PluginResponse::push(Some(format!("script-output:{}", script.id)), detail)
+            let refresh_status = script
+                .refresh_time_secs
+                .map(|interval_secs| ScriptRefreshStatus::Active {
+                    interval_secs,
+                    run_count: 1,
+                })
+                .unwrap_or(ScriptRefreshStatus::None);
+            let detail = build_full_output_detail_view(script, outcome, refresh_status);
+            PluginResponse::push(Some(script_output_frame_id(&script.id)), detail)
         }
     }
+}
+
+/// Builds the declarative `DetailView` for a `fullOutput` Script Command run with optional
+/// live auto-refresh status metadata and Pause/Resume controls.
+#[must_use]
+pub fn build_full_output_detail_view(
+    script: &ScriptCommand,
+    outcome: &ScriptRunOutcome,
+    refresh_status: ScriptRefreshStatus,
+) -> ViewNode {
+    let mut md = format!("# {}\n\n", script.title);
+    if let Some(desc) = &script.description {
+        md.push_str(desc);
+        md.push_str("\n\n");
+    }
+    if outcome.timed_out {
+        md.push_str("_Execution timed out and was terminated safely._\n\n");
+    }
+    if !outcome.stdout.trim().is_empty() {
+        md.push_str("## Output\n\n```text\n");
+        md.push_str(outcome.stdout.trim_end());
+        md.push_str("\n```\n\n");
+    }
+    if !outcome.stderr.trim().is_empty() {
+        md.push_str("## Standard Error\n\n```text\n");
+        md.push_str(outcome.stderr.trim_end());
+        md.push_str("\n```\n\n");
+    }
+    if outcome.stdout.trim().is_empty() && outcome.stderr.trim().is_empty() && !outcome.timed_out {
+        md.push_str("_(Script produced no output.)_\n");
+    }
+
+    let status_tone = if outcome.succeeded() {
+        SemanticTone::Success
+    } else {
+        SemanticTone::Danger
+    };
+    let status_label = if outcome.timed_out {
+        "Timed Out".to_string()
+    } else {
+        match outcome.exit_code {
+            Some(0) => "Exit 0 (OK)".to_string(),
+            Some(code) => format!("Exit {code}"),
+            None => "Terminated".to_string(),
+        }
+    };
+
+    let mut metadata = vec![
+        MetadataEntry::TagList {
+            title: "Status".to_string(),
+            tags: vec![(status_label, status_tone)],
+        },
+        MetadataEntry::Label {
+            title: "Duration".to_string(),
+            text: format!("{} ms", outcome.duration_ms),
+        },
+        MetadataEntry::Label {
+            title: "Mode".to_string(),
+            text: script.mode.label().to_string(),
+        },
+    ];
+
+    match refresh_status {
+        ScriptRefreshStatus::None => {}
+        ScriptRefreshStatus::Active {
+            interval_secs,
+            run_count,
+        } => {
+            metadata.push(MetadataEntry::TagList {
+                title: "Auto-Refresh".to_string(),
+                tags: vec![(
+                    format!("Every {interval_secs}s · #{run_count}"),
+                    SemanticTone::Accent,
+                )],
+            });
+        }
+        ScriptRefreshStatus::Paused {
+            interval_secs,
+            run_count,
+            due_to_failures,
+        } => {
+            let (label, tone) = if due_to_failures {
+                (
+                    format!(
+                        "Paused ({MAX_CONSECUTIVE_REFRESH_FAILURES} errors) · #{run_count}"
+                    ),
+                    SemanticTone::Warning,
+                )
+            } else {
+                (
+                    format!("Paused ({interval_secs}s) · #{run_count}"),
+                    SemanticTone::Neutral,
+                )
+            };
+            metadata.push(MetadataEntry::TagList {
+                title: "Auto-Refresh".to_string(),
+                tags: vec![(label, tone)],
+            });
+        }
+    }
+
+    metadata.push(MetadataEntry::Separator);
+    metadata.push(MetadataEntry::Link {
+        title: "Script Path".to_string(),
+        text: script.path.display().to_string(),
+        target: script.path.display().to_string(),
+    });
+
+    let mut actions = vec![
+        ActionItem::new(format!("script.copy-output:{}", script.id), "Copy Output")
+            .shortcut("Enter"),
+        ActionItem::new(format!("script.rerun:{}", script.id), "Re-run Script")
+            .shortcut("Ctrl+Enter"),
+    ];
+    match refresh_status {
+        ScriptRefreshStatus::Active { .. } => {
+            actions.push(ActionItem::new(
+                format!("script.toggle-refresh:{}", script.id),
+                "Pause Auto-Refresh",
+            ));
+        }
+        ScriptRefreshStatus::Paused { .. } => {
+            actions.push(ActionItem::new(
+                format!("script.toggle-refresh:{}", script.id),
+                "Resume Auto-Refresh",
+            ));
+        }
+        ScriptRefreshStatus::None => {}
+    }
+    actions.push(ActionItem::new("nav.pop", "Back to Root").shortcut("Esc"));
+
+    DetailViewBuilder::new(script.title.clone(), md)
+        .metadata(metadata)
+        .actions(ActionPanel::from_actions(actions))
+        .build()
 }
 
 fn non_empty_trimmed(s: &str) -> Option<&str> {

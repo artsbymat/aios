@@ -13,11 +13,21 @@ use aios_plugin_sdk::{
 
 use crate::manager_view::build_scripts_manager_view;
 use crate::runner::{
-    ScriptCommand, ScriptMode, discover_script_commands, execute_script_command,
-    should_try_xdg_icon_lookup,
+    ScriptCommand, ScriptMode, ScriptRefreshStatus, ScriptRunOutcome,
+    build_full_output_detail_view, discover_script_commands, execute_script_command,
+    script_output_frame_id, should_try_xdg_icon_lookup,
 };
 
 type IconLookupFn = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
+
+/// Auto-refresh directive emitted when a `fullOutput` Script Command with `@aios.refreshTime` runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptRefreshSpec {
+    pub script_id: String,
+    pub frame_id: String,
+    pub args: Vec<String>,
+    pub interval_secs: u64,
+}
 
 /// Summary entry exported to Root Search for one discovered Script Command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +50,7 @@ pub struct RootScriptEntry {
 pub struct ScriptActionResult {
     pub response: PluginResponse,
     pub toast: Option<ToastMessage>,
+    pub refresh_spec: Option<ScriptRefreshSpec>,
 }
 
 impl ScriptActionResult {
@@ -48,6 +59,7 @@ impl ScriptActionResult {
         Self {
             response,
             toast: None,
+            refresh_spec: None,
         }
     }
 }
@@ -57,6 +69,8 @@ pub struct ScriptHost {
     paths: AiosPaths,
     scripts: Vec<ScriptCommand>,
     last_script_outputs: HashMap<String, String>,
+    last_script_args: HashMap<String, Vec<String>>,
+    last_script_outcomes: HashMap<String, ScriptRunOutcome>,
     inline_script_summaries: HashMap<String, String>,
     icon_resolver: Option<IconLookupFn>,
     script_timeout: Duration,
@@ -94,6 +108,8 @@ impl ScriptHost {
             paths,
             scripts: Vec::new(),
             last_script_outputs: HashMap::new(),
+            last_script_args: HashMap::new(),
+            last_script_outcomes: HashMap::new(),
             inline_script_summaries: HashMap::new(),
             icon_resolver,
             script_timeout: Duration::from_secs(15),
@@ -122,6 +138,11 @@ impl ScriptHost {
 
     pub fn set_script_timeout(&mut self, timeout: Duration) {
         self.script_timeout = timeout;
+    }
+
+    #[must_use]
+    pub fn script_timeout(&self) -> Duration {
+        self.script_timeout
     }
 
     #[must_use]
@@ -218,6 +239,104 @@ impl ScriptHost {
         }
 
         let (outcome, response) = execute_script_command(&script, args, self.script_timeout);
+        self.record_outcome(&script, args, &outcome);
+
+        let refresh_spec = if script.mode == ScriptMode::FullOutput && !outcome.timed_out {
+            script.refresh_time_secs.map(|interval_secs| ScriptRefreshSpec {
+                script_id: script.id.clone(),
+                frame_id: script_output_frame_id(&script.id),
+                args: args.to_vec(),
+                interval_secs,
+            })
+        } else {
+            None
+        };
+
+        ScriptActionResult {
+            response,
+            toast: None,
+            refresh_spec,
+        }
+    }
+
+    /// Re-runs an already-open `fullOutput` Script Command in place (preserving its last arguments)
+    /// without pushing duplicate frames onto the navigation stack.
+    pub fn rerun_script_in_place(
+        &mut self,
+        script_id: &str,
+        override_args: &[String],
+        refresh_status: Option<ScriptRefreshStatus>,
+    ) -> ScriptActionResult {
+        let Some(script) = self.find_script(script_id).cloned() else {
+            return self.run_script(script_id, override_args, false);
+        };
+        let effective_args = if !override_args.is_empty() {
+            override_args.to_vec()
+        } else {
+            self.last_script_args
+                .get(&script.id)
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        if script.mode != ScriptMode::FullOutput {
+            return self.run_script(&script.id, &effective_args, true);
+        }
+
+        let (outcome, _) = execute_script_command(&script, &effective_args, self.script_timeout);
+        self.record_outcome(&script, &effective_args, &outcome);
+
+        let status = refresh_status.unwrap_or_else(|| {
+            script
+                .refresh_time_secs
+                .map(|interval_secs| ScriptRefreshStatus::Active {
+                    interval_secs,
+                    run_count: 1,
+                })
+                .unwrap_or(ScriptRefreshStatus::None)
+        });
+        let detail = build_full_output_detail_view(&script, &outcome, status);
+        let refresh_spec = script.refresh_time_secs.map(|interval_secs| ScriptRefreshSpec {
+            script_id: script.id.clone(),
+            frame_id: script_output_frame_id(&script.id),
+            args: effective_args,
+            interval_secs,
+        });
+
+        ScriptActionResult {
+            response: PluginResponse::render(detail),
+            toast: None,
+            refresh_spec,
+        }
+    }
+
+    /// Records the outcome of a background auto-refresh tick and returns the updated in-place `DetailView`.
+    pub fn record_refresh_tick(
+        &mut self,
+        script_id: &str,
+        args: &[String],
+        outcome: ScriptRunOutcome,
+        refresh_status: ScriptRefreshStatus,
+    ) -> Option<ViewNode> {
+        let script = self.find_script(script_id)?.clone();
+        self.record_outcome(&script, args, &outcome);
+        Some(build_full_output_detail_view(&script, &outcome, refresh_status))
+    }
+
+    /// Re-renders the last captured `fullOutput` DetailView with an updated auto-refresh status
+    /// (for instant Pause/Resume feedback without re-executing the script).
+    #[must_use]
+    pub fn render_detail_with_refresh_status(
+        &self,
+        script_id: &str,
+        refresh_status: ScriptRefreshStatus,
+    ) -> Option<ViewNode> {
+        let script = self.find_script(script_id)?;
+        let outcome = self.last_script_outcomes.get(&script.id)?;
+        Some(build_full_output_detail_view(script, outcome, refresh_status))
+    }
+
+    fn record_outcome(&mut self, script: &ScriptCommand, args: &[String], outcome: &ScriptRunOutcome) {
         let combined_output = if outcome.stderr.trim().is_empty() {
             outcome.stdout.clone()
         } else if outcome.stdout.trim().is_empty() {
@@ -231,14 +350,16 @@ impl ScriptHost {
         };
         self.last_script_outputs
             .insert(script.id.clone(), combined_output);
+        self.last_script_args
+            .insert(script.id.clone(), args.to_vec());
+        self.last_script_outcomes
+            .insert(script.id.clone(), outcome.clone());
         if script.mode == ScriptMode::Inline
             && let Some(line) = outcome.last_non_empty_line()
         {
             self.inline_script_summaries
                 .insert(script.id.clone(), line.to_owned());
         }
-
-        ScriptActionResult::response_only(response)
     }
 
     /// Dispatches `script.*`, `scripts.*`, and `core.open-scripts` actions emitted by the UI shell.
@@ -263,6 +384,7 @@ impl ScriptHost {
                     title: format!("Loaded {} script command(s)", self.scripts.len()),
                     message: None,
                 }),
+                refresh_spec: None,
             });
         }
 
@@ -277,6 +399,10 @@ impl ScriptHost {
 
         if let Some(script_id) = action_id.strip_prefix("script.run:") {
             return Some(self.run_script(script_id, inline_args, false));
+        }
+
+        if let Some(script_id) = action_id.strip_prefix("script.rerun:") {
+            return Some(self.rerun_script_in_place(script_id, inline_args, None));
         }
 
         if let Some(rest) = action_id.strip_prefix("script.confirm:") {

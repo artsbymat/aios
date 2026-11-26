@@ -22,7 +22,10 @@ use aios_plugin_host::{
     WasmExecutionLimits,
 };
 use aios_plugin_sdk::{PluginEvent, PluginResponse};
-use aios_scripts::{ScriptActionResult, ScriptHost};
+use aios_scripts::{
+    MAX_CONSECUTIVE_REFRESH_FAILURES, ScriptActionResult, ScriptHost, ScriptRefreshSpec,
+    ScriptRefreshStatus, execute_script_command,
+};
 use aios_wayland::{IpcServer, PortalThemeWatcher, detect_compositor};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight,
@@ -48,6 +51,17 @@ use crate::views::{
     list::render_list_view,
 };
 
+struct ActiveScriptRefresh {
+    generation: u64,
+    script_id: String,
+    frame_id: String,
+    args: Vec<String>,
+    interval_secs: u64,
+    run_count: u64,
+    paused: bool,
+    consecutive_failures: u8,
+}
+
 /// Main GPUI entity owning the active launcher `NavStack`, Root Search orchestrator,
 /// WASM `PluginHost`, standalone `ScriptHost`, keyboard focus, scroll handles, and overlays.
 pub struct LauncherWindow {
@@ -61,6 +75,8 @@ pub struct LauncherWindow {
     pub form_scroll: ScrollHandle,
     pub action_panel_scroll: ScrollHandle,
     image_cache: Entity<RetainAllImageCache>,
+    active_script_refresh: Option<ActiveScriptRefresh>,
+    script_refresh_gen: u64,
     sync_scroll: Cell<bool>,
 }
 
@@ -109,6 +125,8 @@ impl LauncherWindow {
             form_scroll: ScrollHandle::new(),
             action_panel_scroll: ScrollHandle::new(),
             image_cache,
+            active_script_refresh: None,
+            script_refresh_gen: 0,
             sync_scroll: Cell::new(true),
         };
         if let Some(uri) = initial_uri {
@@ -412,8 +430,210 @@ impl LauncherWindow {
         }
 
         if should_close {
+            self.stop_script_refresh();
             window.remove_window();
+        } else {
+            self.sync_script_refresh_with_active_frame();
         }
+    }
+
+    fn stop_script_refresh(&mut self) {
+        self.script_refresh_gen = self.script_refresh_gen.wrapping_add(1);
+        self.active_script_refresh = None;
+    }
+
+    fn sync_script_refresh_with_active_frame(&mut self) {
+        let still_on_frame = self
+            .active_script_refresh
+            .as_ref()
+            .is_some_and(|r| r.frame_id == self.state.current().id);
+        if self.active_script_refresh.is_some() && !still_on_frame {
+            self.stop_script_refresh();
+        }
+    }
+
+    fn start_script_refresh(&mut self, spec: ScriptRefreshSpec, cx: &mut Context<Self>) {
+        self.script_refresh_gen = self.script_refresh_gen.wrapping_add(1);
+        let generation = self.script_refresh_gen;
+        let run_count = match self.active_script_refresh.as_ref() {
+            Some(prev) if prev.script_id == spec.script_id && prev.frame_id == spec.frame_id => {
+                prev.run_count.saturating_add(1)
+            }
+            _ => 1,
+        };
+        self.active_script_refresh = Some(ActiveScriptRefresh {
+            generation,
+            script_id: spec.script_id,
+            frame_id: spec.frame_id,
+            args: spec.args,
+            interval_secs: spec.interval_secs.max(1),
+            run_count,
+            paused: false,
+            consecutive_failures: 0,
+        });
+        self.schedule_script_refresh_tick(generation, cx);
+    }
+
+    fn schedule_script_refresh_tick(&mut self, generation: u64, cx: &mut Context<Self>) {
+        let Some(active) = self.active_script_refresh.as_ref() else {
+            return;
+        };
+        if active.generation != generation || active.paused {
+            return;
+        }
+        let interval_secs = active.interval_secs.max(1);
+        let script_id = active.script_id.clone();
+        let frame_id = active.frame_id.clone();
+        let args = active.args.clone();
+
+        let (script, timeout) = {
+            let host = self.script_host.borrow();
+            let Some(sc) = host.find_script(&script_id).cloned() else {
+                return;
+            };
+            (sc, host.script_timeout())
+        };
+
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs(interval_secs))
+                .await;
+
+            // Abort before spawning a subprocess if the user paused, popped the frame, or closed.
+            let should_run = this
+                .read_with(cx, |win, _| {
+                    win.state.current().id == frame_id
+                        && win.active_script_refresh.as_ref().is_some_and(|r| {
+                            r.generation == generation && !r.paused && r.frame_id == frame_id
+                        })
+                })
+                .unwrap_or(false);
+            if !should_run {
+                return;
+            }
+
+            let script_for_bg = script.clone();
+            let args_for_bg = args.clone();
+            let (outcome, _) = cx
+                .background_executor()
+                .spawn(async move { execute_script_command(&script_for_bg, &args_for_bg, timeout) })
+                .await;
+
+            let _ = this.update(cx, |win, cx| {
+                if win.state.current().id != frame_id {
+                    win.stop_script_refresh();
+                    return;
+                }
+                let Some(active) = win.active_script_refresh.as_mut() else {
+                    return;
+                };
+                if active.generation != generation || active.paused || active.frame_id != frame_id {
+                    return;
+                }
+
+                active.run_count = active.run_count.saturating_add(1);
+                if outcome.succeeded() {
+                    active.consecutive_failures = 0;
+                } else {
+                    active.consecutive_failures = active.consecutive_failures.saturating_add(1);
+                }
+
+                let failed_out = active.consecutive_failures >= MAX_CONSECUTIVE_REFRESH_FAILURES;
+                if failed_out {
+                    active.paused = true;
+                }
+
+                let refresh_status = if failed_out {
+                    ScriptRefreshStatus::Paused {
+                        interval_secs: active.interval_secs,
+                        run_count: active.run_count,
+                        due_to_failures: true,
+                    }
+                } else {
+                    ScriptRefreshStatus::Active {
+                        interval_secs: active.interval_secs,
+                        run_count: active.run_count,
+                    }
+                };
+
+                if let Some(updated_view) = win.script_host.borrow_mut().record_refresh_tick(
+                    &script_id,
+                    &args,
+                    outcome,
+                    refresh_status,
+                ) {
+                    win.state.current_mut().view = updated_view;
+                }
+
+                if failed_out {
+                    win.state.show_toast(
+                        ToastStyle::Failure,
+                        "Auto-refresh paused",
+                        Some(format!(
+                            "Stopped after {MAX_CONSECUTIVE_REFRESH_FAILURES} consecutive failures. Press Ctrl+Enter to retry."
+                        )),
+                    );
+                    cx.notify();
+                } else {
+                    cx.notify();
+                    win.schedule_script_refresh_tick(generation, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn toggle_script_refresh(&mut self, script_id: &str, cx: &mut Context<Self>) {
+        let Some(active) = self.active_script_refresh.as_mut() else {
+            return;
+        };
+        if active.script_id != script_id || self.state.current().id != active.frame_id {
+            return;
+        }
+
+        self.script_refresh_gen = self.script_refresh_gen.wrapping_add(1);
+        let next_gen = self.script_refresh_gen;
+        active.generation = next_gen;
+
+        if active.paused {
+            active.paused = false;
+            active.consecutive_failures = 0;
+            let status = ScriptRefreshStatus::Active {
+                interval_secs: active.interval_secs,
+                run_count: active.run_count,
+            };
+            let interval_secs = active.interval_secs;
+            if let Some(view) = self
+                .script_host
+                .borrow()
+                .render_detail_with_refresh_status(script_id, status)
+            {
+                self.state.current_mut().view = view;
+            }
+            self.state.show_toast(
+                ToastStyle::Success,
+                format!("Auto-refresh resumed ({interval_secs}s)"),
+                None,
+            );
+            self.schedule_script_refresh_tick(next_gen, cx);
+        } else {
+            active.paused = true;
+            let status = ScriptRefreshStatus::Paused {
+                interval_secs: active.interval_secs,
+                run_count: active.run_count,
+                due_to_failures: false,
+            };
+            if let Some(view) = self
+                .script_host
+                .borrow()
+                .render_detail_with_refresh_status(script_id, status)
+            {
+                self.state.current_mut().view = view;
+            }
+            self.state
+                .show_toast(ToastStyle::Success, "Auto-refresh paused", None);
+        }
+        cx.notify();
     }
 
     pub fn trigger_primary_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -446,6 +666,7 @@ impl LauncherWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let refresh_spec = result.refresh_spec;
         let side_effects = result
             .toast
             .into_iter()
@@ -460,6 +681,13 @@ impl LauncherWindow {
             window,
             cx,
         );
+        if let Some(spec) = refresh_spec {
+            if self.state.current().id == spec.frame_id {
+                self.start_script_refresh(spec, cx);
+            }
+        } else {
+            self.sync_script_refresh_with_active_frame();
+        }
     }
 
     pub fn execute_action(&mut self, action_id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -472,14 +700,34 @@ impl LauncherWindow {
             || action_id == "core.open-scripts";
 
         if is_script_host_action {
+            if let Some(script_id) = action_id.strip_prefix("script.toggle-refresh:") {
+                self.toggle_script_refresh(script_id, cx);
+                return;
+            }
             let inline_args = self.state.current().inline_arg_values.clone();
-            let maybe_result = self
-                .script_host
-                .borrow_mut()
-                .dispatch_action(action_id, &inline_args);
+            let maybe_result = if let Some(script_id) = action_id.strip_prefix("script.rerun:") {
+                let next_status = self.active_script_refresh.as_ref().and_then(|r| {
+                    (r.script_id == script_id && r.frame_id == self.state.current().id).then_some(
+                        ScriptRefreshStatus::Active {
+                            interval_secs: r.interval_secs,
+                            run_count: r.run_count.saturating_add(1),
+                        },
+                    )
+                });
+                Some(self.script_host.borrow_mut().rerun_script_in_place(
+                    script_id,
+                    &inline_args,
+                    next_status,
+                ))
+            } else {
+                self.script_host
+                    .borrow_mut()
+                    .dispatch_action(action_id, &inline_args)
+            };
             if let Some(result) = maybe_result {
                 let mutates_scripts = action_id == "scripts.reload"
                     || action_id.starts_with("script.run:")
+                    || action_id.starts_with("script.rerun:")
                     || action_id.starts_with("script.confirm:");
                 if mutates_scripts {
                     sync_external_entries_to_root_search(
@@ -660,6 +908,7 @@ impl LauncherWindow {
         let effect = dispatch_demo_action(&mut self.state, action_id);
         if action_id == "search.clear" || action_id == "nav.pop" {
             self.refresh_root_search();
+            self.sync_script_refresh_with_active_frame();
         }
         self.request_scroll_sync();
         self.apply_effect(effect, window, cx);
@@ -670,6 +919,7 @@ impl LauncherWindow {
         match effect {
             ShellEffect::None => {}
             ShellEffect::HideWindow => {
+                self.stop_script_refresh();
                 window.remove_window();
             }
             ShellEffect::CycleTheme => {
@@ -708,6 +958,7 @@ impl LauncherWindow {
         if key == "escape" {
             let effect = self.state.handle_escape();
             self.refresh_root_search();
+            self.sync_script_refresh_with_active_frame();
             self.apply_effect(effect, window, cx);
             cx.notify();
             return;

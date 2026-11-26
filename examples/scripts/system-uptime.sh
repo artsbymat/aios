@@ -4,7 +4,6 @@
 # @aios.packageName System Tools
 # @aios.description Displays concise host uptime and load average inline in Root Search.
 # @aios.mode inline
-# @aios.refreshTime 30s
 # @aios.icon UP
 
 if command -v uptime >/dev/null 2>&1; then

@@ -9,7 +9,7 @@ use aios_plugin_sdk::{
     ListViewBuilder, MetadataEntry, SemanticTone, ViewNode,
 };
 
-use crate::runner::ScriptCommand;
+use crate::runner::{ScriptCommand, ScriptMode};
 
 /// Builds the dedicated Script Commands Manager `List + Split Detail` view.
 #[must_use]
@@ -65,6 +65,11 @@ pub fn build_scripts_manager_view(
                     sc.needs_confirmation,
                     sc.arguments.len()
                 );
+                if sc.mode == ScriptMode::FullOutput
+                    && let Some(secs) = sc.refresh_time_secs
+                {
+                    detail_md.push_str(&format!("\n- Auto-refresh: `every {secs}s`"));
+                }
                 if let Some(summary) = inline_summary {
                     detail_md.push_str(&format!("\n- Latest inline output: `{summary}`"));
                 }
@@ -79,6 +84,30 @@ pub fn build_scripts_manager_view(
                     }
                 }
 
+                let mut metadata = vec![
+                    MetadataEntry::Label {
+                        title: "Script ID".to_string(),
+                        text: sc.id.clone(),
+                    },
+                    MetadataEntry::Label {
+                        title: "Mode".to_string(),
+                        text: sc.mode.label().to_string(),
+                    },
+                ];
+                if sc.mode == ScriptMode::FullOutput
+                    && let Some(secs) = sc.refresh_time_secs
+                {
+                    metadata.push(MetadataEntry::Label {
+                        title: "Auto-Refresh".to_string(),
+                        text: format!("Every {secs}s"),
+                    });
+                }
+                metadata.push(MetadataEntry::Link {
+                    title: "Path".to_string(),
+                    text: sc.path.display().to_string(),
+                    target: sc.path.display().to_string(),
+                });
+
                 let mut item = ListItemBuilder::new(format!("mgr-script:{}", sc.id), sc.title.clone())
                     .subtitle(
                         sc.package_name
@@ -90,24 +119,7 @@ pub fn build_scripts_manager_view(
                     .keyword("script")
                     .keyword(sc.mode.label())
                     .accessory_tag(sc.mode.label(), SemanticTone::Neutral)
-                    .detail(
-                        detail_md,
-                        vec![
-                            MetadataEntry::Label {
-                                title: "Script ID".to_string(),
-                                text: sc.id.clone(),
-                            },
-                            MetadataEntry::Label {
-                                title: "Mode".to_string(),
-                                text: sc.mode.label().to_string(),
-                            },
-                            MetadataEntry::Link {
-                                title: "Path".to_string(),
-                                text: sc.path.display().to_string(),
-                                target: sc.path.display().to_string(),
-                            },
-                        ],
-                    )
+                    .detail(detail_md, metadata)
                     .actions(
                         ActionPanelBuilder::new()
                             .section(
