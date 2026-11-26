@@ -76,6 +76,7 @@ Key bottlenecks identified by profiling and verified via benchmarks:
 | **`DmenuState` multi-core `search_parallel` + zero-alloc Top-K tie-break** (50k items)                                        |                                      `32.80 ms` |                                                       **`15.47 ms`** |             **2.12x faster** |
 | **Async `SearchSession` + 55 ms uncached SVG typing settle** (`DmenuWindow`, 100k items rapid typing)                         |          Blocked UI thread 25-100+ ms/keystroke |                               **`1.27 ms`** avg UI latency/keystroke | **>20x lower input latency** |
 | **GPUI `uniform_list` virtualization** (`DmenuWindow` with 5,000+ Papirus SVGs)                                               |   Rendered & rasterized all 5,000+ SVGs eagerly |                            Renders only ~10-15 visible viewport rows |     **Constant O(viewport)** |
+| **`PackedTextCorpus` (`33 MiB` mmap slabs) + `PackedSearchSession` + zero-alloc empty query** (1M-line `find` x 5 cycles)     | `> 700 MB` peak / `623 MB` retained after close |          **`65.8 MB`** peak / **`~0.9 MB`** retained after each close | **>10x lower peak, full `munmap` reclaim** |
 
 ---
 

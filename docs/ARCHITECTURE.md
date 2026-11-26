@@ -50,7 +50,7 @@ AIOS uses a **persistent lightweight daemon + instant GPUI surface** model so in
 2. When the user presses their compositor keybind (for example `SUPER + Space`), the compositor runs `aios toggle` or `aios open "aios://search?q=...&filter=..."` (a tiny, fast CLI path that writes a 1-frame command to `$XDG_RUNTIME_DIR/aios.sock` and exits immediately).
 3. For shell scripts wanting `dmenu`/`rofi -dmenu` semantics (`echo -e "Full\nArea" | aios dmenu -p "Screenshot" -l 7`), `aios dmenu` sends a `Dmenu` request over `$XDG_RUNTIME_DIR/aios.sock` so the warm daemon opens a compact GPUI LayerShell picker immediately without blocking the IPC accept loop. If no daemon is running, `aios dmenu` falls back seamlessly to a standalone GPUI window. All structured logs go to `stderr` so `stdout` carries only the chosen item (exit code `0`) or remains empty on cancel (exit code `1`).
 4. The running GPUI host opens or reveals the `WindowKind::LayerShell` surface on the currently active monitor with `KeyboardInteractivity::Exclusive`.
-5. Pressing `Esc`, executing an action that closes the window, or cancelling `dmenu` hides/destroys the layer surface while keeping indexes and plugin warm caches in RAM.
+5. Pressing `Esc`, executing an action that closes the window, or cancelling `dmenu` destroys the layer surface, clears the window-scoped `RetainAllImageCache`, closes any active `dmenu` streaming IPC socket/channel, cancels background search workers, and drops `PackedTextCorpus` bulk slabs (triggering immediate `munmap()` reclamation back to the OS) while keeping only lightweight desktop indexes and plugin warm caches in RAM.
 
 ---
 
@@ -188,6 +188,9 @@ All state lives strictly on the local machine following XDG specifications:
 - **UI Thread (GPUI main loop)**: Strictly non-blocking. Never performs disk I/O, network requests, subprocess execution, or WASM calls directly. Runs only the `aios-fuzzy` inline fast path within a strict `<= 1.5ms` budget and renders the latest `SearchSnapshot` independently at monitor refresh rate.
 - **Async Runtime (Tokio multi-thread)**: Handles Unix socket IPC, D-Bus watchers, Hyprland/Niri event streams, HTTP requests (when granted to a plugin), and file walking.
 - **Compute Pool (`rayon` / dedicated worker threads)**: Runs `aios-fuzzy` parallel chunked matching with progressive Top-K snapshot streaming, latest-wins query replacement, and atomic keystroke cancellation (modeled on `instantMENU`'s parallel search/filter/render separation), alongside Wasmtime plugin execution with fuel limits.
+- **Memory Reclamation Discipline (Daemon Longevity)**:
+  - `DmenuState` stores incoming stdin lines in `aios_fuzzy::PackedTextCorpus` (`64 KiB` initial slab for small lists; `33 MiB` demand-paged `mmap` slabs for large lists so Linux glibc reclaims 100% of physical pages via `munmap()` on window close without arena pinning), uses zero-allocation identity indexing when the query is empty, and searches zero-copy via `PackedSearchSession`.
+  - Both `LauncherWindow` and `DmenuWindow` scope decoded `img(...)` assets to a window-owned `gpui::RetainAllImageCache` cleared on close so icons and thumbnails never accumulate permanently in GPUI's app-level `loading_assets` map.
 - **Performance Targets & Verified Measurements** (see [docs/BENCHMARKS.md](BENCHMARKS.md) for full release benchmark numbers and reproduction commands):
   - Unix socket IPC `Toggle` round-trip: `29.6 us` (target: toggle-to-first-frame `< 16ms`)
   - `aios-fuzzy` parallel search: `5.32 ms` (10k items), `13.06 ms` (100k items), `1.27 ms` avg UI-thread keystroke latency on 100k items via async `SearchSession`

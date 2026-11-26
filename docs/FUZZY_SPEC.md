@@ -181,11 +181,12 @@ Inspired by `instantMENU`'s parallel search/filter/render architecture (specific
 - **Bounded Top-K Min-Heap Merge**: Each chunk retains only its top `K` (default `200`) highest-scoring matches in a binary min-heap instead of sorting the entire corpus. After each macro-batch (e.g. `8,192` items or `~8ms`), results merge into the running global Top-K and emit a progressive `SearchSnapshot` (`generation`, `matches`, `total_matched`, `processed_items`, `total_items`, `is_complete`).
 - **Live UI Feedback**: While `is_complete == false`, the GPUI render thread stays responsive at 60-144Hz, displays the best matches discovered so far, activates the 2px header loading track, and indicates ongoing refinement in the match counter (e.g., `42...`).
 
-### 6.3 Latest-Wins Query Replacement & Atomic Cancellation
+### 6.3 Latest-Wins Query Replacement, Atomic Cancellation & Packed Corpora
 
 - **Zero Keystroke Queueing**: Typing faster than a large corpus can be scored never queues stale searches. A new query bumps a monotonic `Arc<AtomicU64>` generation counter and replaces any pending query in a single latest-wins slot.
 - **Fine-Grained Cancellation**: Parallel workers poll the generation counter every `256` items and abort stale work immediately. Any in-flight snapshot with an older `generation` is dropped on the receiver side.
-- **Lock-Free Corpus Reads**: Corpora are shared via immutable `Arc<[T]>` snapshots so UI rendering and parallel worker threads never contend on a mutex during matching.
+- **Lock-Free Corpus Reads**: General structured corpora are shared via immutable `Arc<[T]>` snapshots so UI rendering and parallel worker threads never contend on a mutex during matching.
+- **Contiguous `mmap`-Backed Text Corpora (`PackedTextCorpus` / `PackedSearchSession`)**: For huge plain-text streams (such as `find / | aios dmenu` with 1M+ entries), `crates/aios-fuzzy/src/corpus.rs` packs UTF-8 bytes from the front and 4-byte native-endian end offsets from the back of unified contiguous slabs (`64 KiB` initial slab for small lists, `33 MiB` bulk slabs strictly above Linux glibc's `32 MiB` `DEFAULT_MMAP_THRESHOLD_MAX` for large lists). `PackedSearchSession` shares immutable `PackedTextSnapshot` slices (`O(slabs)` `Arc` clones, zero per-item `String` allocation, zero deep-clone on keystrokes) and guarantees immediate OS `munmap()` reclamation when the corpus drops.
 
 ### 6.4 Benchmark Targets
 
