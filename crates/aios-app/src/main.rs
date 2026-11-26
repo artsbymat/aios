@@ -8,9 +8,9 @@ use aios_daemon::{
     DaemonIpcCommand, DaemonIpcResponse, DmenuCaseMode, DmenuRequest, DmenuStreamMessage,
 };
 use aios_plugin_host::{
-    PluginHost, WasmExecutionLimits, discover_plugins, discover_script_commands,
-    install_plugin_from_dir, uninstall_plugin,
+    PluginHost, WasmExecutionLimits, discover_plugins, install_plugin_from_dir, uninstall_plugin,
 };
+use aios_scripts::{discover_script_commands, execute_script_command};
 use aios_ui::{
     DmenuOutcome, palette_for, run_daemon_app, run_dev_plugin_app, run_dmenu_app_streaming,
     run_preview_app,
@@ -96,7 +96,7 @@ enum Command {
     Show,
     /// Hide the main AIOS launcher overlay via the running daemon.
     Hide,
-    /// Open an AIOS deep link URI (e.g. aios://search?q=screenshot, aios://settings, aios://demo/grid).
+    /// Open an AIOS deep link URI (e.g. aios://search?q=screenshot, aios://settings, aios://scripts).
     Open { uri: String },
     /// Interactive dmenu/rofi-compatible stdin -> stdout fuzzy picker.
     #[command(
@@ -153,11 +153,16 @@ enum Command {
         #[command(subcommand)]
         action: PluginCommand,
     },
+    /// Manage and run local Script Commands (`aios script ...`).
+    Script {
+        #[command(subcommand)]
+        action: ScriptCliCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum PluginCommand {
-    /// List installed external WASM plugins and discovered Script Commands.
+    /// List installed external WASM plugins.
     List,
     /// Validate and install a local WASM plugin bundle directory (`aios-plugin.toml` + `.wasm`).
     Install { path: PathBuf },
@@ -173,6 +178,22 @@ enum PluginCommand {
         #[arg(long, value_enum)]
         theme: Option<CliTheme>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ScriptCliCommand {
+    /// List discovered Script Commands in `$XDG_CONFIG_HOME/aios/scripts/`.
+    List,
+    /// Execute a discovered Script Command by ID (`script:<name>` or `<name>`).
+    Run {
+        /// Script ID (`script:<name>`) or file stem (`<name>`).
+        id: String,
+        /// Optional positional arguments passed to the script.
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+    /// Print the resolved Script Commands directory path.
+    Dir,
 }
 
 fn main() -> Result<()> {
@@ -241,6 +262,7 @@ fn main() -> Result<()> {
         }
         Command::Status => dispatch_ipc(DaemonIpcCommand::Status),
         Command::Plugin { action } => run_plugin_cli(action),
+        Command::Script { action } => run_script_cli(action),
     }
 }
 
@@ -252,7 +274,6 @@ fn run_plugin_cli(action: PluginCommand) -> Result<()> {
     match action {
         PluginCommand::List => {
             let plugins = discover_plugins(&paths.plugins_dir());
-            let scripts = discover_script_commands(&paths.scripts_dir());
             println!("Installed WASM Plugins ({}):", plugins.len());
             if plugins.is_empty() {
                 println!("  (none in {})", paths.plugins_dir().display());
@@ -264,20 +285,6 @@ fn run_plugin_cli(action: PluginCommand) -> Result<()> {
                         p.manifest.version,
                         p.manifest.id,
                         p.manifest.commands.len()
-                    );
-                }
-            }
-            println!("Script Commands ({}):", scripts.len());
-            if scripts.is_empty() {
-                println!("  (none in {})", paths.scripts_dir().display());
-            } else {
-                for s in &scripts {
-                    println!(
-                        "  - {} [{}] mode={} ({})",
-                        s.title,
-                        s.id,
-                        s.mode.label(),
-                        s.path.display()
                     );
                 }
             }
@@ -295,7 +302,7 @@ fn run_plugin_cli(action: PluginCommand) -> Result<()> {
             let caps = installed.manifest.capabilities.declared_keys();
             if !caps.is_empty() {
                 println!(
-                    "Declared capabilities (denied until approved in Settings & Extensions): {}",
+                    "Declared capabilities (denied until approved in Settings & Plugins): {}",
                     caps.join(", ")
                 );
             }
@@ -334,6 +341,70 @@ fn run_plugin_cli(action: PluginCommand) -> Result<()> {
                 "starting AIOS plugin dev session with hot-reload"
             );
             run_dev_plugin_app(config, paths, path, command, theme.map(ThemeMode::from));
+            Ok(())
+        }
+    }
+}
+
+fn run_script_cli(action: ScriptCliCommand) -> Result<()> {
+    let paths = AiosPaths::discover()?;
+    paths.ensure_dirs()?;
+
+    match action {
+        ScriptCliCommand::List => {
+            let scripts = discover_script_commands(&paths.scripts_dir());
+            println!("Script Commands ({}):", scripts.len());
+            if scripts.is_empty() {
+                println!("  (none in {})", paths.scripts_dir().display());
+            } else {
+                for s in &scripts {
+                    let confirm = if s.needs_confirmation {
+                        " confirm=true"
+                    } else {
+                        ""
+                    };
+                    println!(
+                        "  - {} [{}] mode={} args={}{} ({})",
+                        s.title,
+                        s.id,
+                        s.mode.label(),
+                        s.arguments.len(),
+                        confirm,
+                        s.path.display()
+                    );
+                }
+            }
+            Ok(())
+        }
+        ScriptCliCommand::Run { id, args } => {
+            let scripts = discover_script_commands(&paths.scripts_dir());
+            let Some(script) = scripts
+                .iter()
+                .find(|s| s.id == id || s.id.strip_prefix("script:") == Some(id.as_str()))
+            else {
+                bail!(
+                    "script '{id}' not found in {}. Run `aios script list` to inspect available scripts.",
+                    paths.scripts_dir().display()
+                );
+            };
+            let (outcome, _) = execute_script_command(script, &args, Duration::from_secs(30));
+            if !outcome.stdout.is_empty() {
+                print!("{}", outcome.stdout);
+            }
+            if !outcome.stderr.is_empty() {
+                eprint!("{}", outcome.stderr);
+            }
+            if outcome.timed_out {
+                bail!("script '{}' timed out after {}ms", script.title, outcome.duration_ms);
+            }
+            match outcome.exit_code {
+                Some(0) => Ok(()),
+                Some(code) => std::process::exit(code),
+                None => bail!("script '{}' terminated by signal", script.title),
+            }
+        }
+        ScriptCliCommand::Dir => {
+            println!("{}", paths.scripts_dir().display());
             Ok(())
         }
     }

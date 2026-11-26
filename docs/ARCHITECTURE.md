@@ -32,7 +32,7 @@ AIOS uses a **persistent lightweight daemon + instant GPUI surface** model so in
                                    |  +------+-----+   +-----+------+  |
                                    |  |  Core App  |   | WASM Host  |  |
                                    |  |  Launcher  |   | (wasmtime) |  |
-                                   |  |  & Root    |   | + Scripts  |  |
+                                   |  |  & Scripts |   |  Plugins   |  |
                                    |  +------+-----+   +-----+------+  |
                                    |         |               |         |
                                    |  +------+---------------+------+  |

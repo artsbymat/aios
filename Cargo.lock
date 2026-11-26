@@ -168,6 +168,7 @@ dependencies = [
  "aios-daemon",
  "aios-fuzzy",
  "aios-plugin-host",
+ "aios-scripts",
  "aios-ui",
  "aios-wayland",
  "anyhow",
@@ -246,6 +247,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aios-scripts"
+version = "0.1.0"
+dependencies = [
+ "aios-core",
+ "aios-plugin-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "aios-ui"
 version = "0.1.0"
 dependencies = [
@@ -255,6 +268,7 @@ dependencies = [
  "aios-fuzzy",
  "aios-plugin-host",
  "aios-plugin-sdk",
+ "aios-scripts",
  "aios-wayland",
  "anyhow",
  "async-channel",

@@ -1,4 +1,4 @@
-//! Tier-3 Script Commands discovery, metadata header parser (`@aios.*`), and timeout-safe runner.
+//! Script Commands discovery, metadata header parser (`@aios.*`), and timeout-safe runner.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -295,7 +295,6 @@ pub fn execute_script_command(
         }
     };
 
-    // Poll until process finishes or timeout expires.
     let mut timed_out = false;
     loop {
         match child.try_wait() {

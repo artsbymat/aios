@@ -6,6 +6,7 @@ members = [
     "crates/aios-wayland",
     "crates/aios-plugin-sdk",
     "crates/aios-plugin-host",
+    "crates/aios-scripts",
     "crates/aios-builtin",
     "crates/aios-ui",
     "crates/aios-daemon",
@@ -25,6 +26,7 @@ aios-core = { path = "crates/aios-core" }
 aios-wayland = { path = "crates/aios-wayland" }
 aios-plugin-sdk = { path = "crates/aios-plugin-sdk" }
 aios-plugin-host = { path = "crates/aios-plugin-host" }
+aios-scripts = { path = "crates/aios-scripts" }
 aios-builtin = { path = "crates/aios-builtin" }
 aios-ui = { path = "crates/aios-ui" }
 aios-daemon = { path = "crates/aios-daemon" }

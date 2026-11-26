@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aios_builtin::{
-    ExternalRootEntry, IconResolver, RootActionOutcome, RootSearchOrchestrator, open_url_detached,
+    ExternalRootEntry, ExternalRootKind, IconResolver, RootActionOutcome, RootSearchOrchestrator,
+    open_url_detached,
 };
 use aios_core::config::{AiosConfig, ResolvedTheme, ThemeMode};
 use aios_core::paths::AiosPaths;
@@ -21,6 +22,7 @@ use aios_plugin_host::{
     WasmExecutionLimits,
 };
 use aios_plugin_sdk::{PluginEvent, PluginResponse};
+use aios_scripts::{ScriptActionResult, ScriptHost};
 use aios_wayland::{IpcServer, PortalThemeWatcher, detect_compositor};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, FocusHandle, Focusable, FontWeight,
@@ -48,11 +50,12 @@ use crate::views::{
 };
 
 /// Main GPUI entity owning the active launcher `NavStack`, Root Search orchestrator,
-/// hybrid PluginHost (WASM + Script Commands), keyboard focus, scroll handles, and overlays.
+/// WASM `PluginHost`, standalone `ScriptHost`, keyboard focus, scroll handles, and overlays.
 pub struct LauncherWindow {
     pub state: LauncherState,
     pub root_search: Rc<RefCell<RootSearchOrchestrator>>,
     pub plugin_host: Rc<RefCell<PluginHost>>,
+    pub script_host: Rc<RefCell<ScriptHost>>,
     pub focus_handle: FocusHandle,
     pub list_scroll: ScrollHandle,
     pub grid_scroll: ScrollHandle,
@@ -79,6 +82,7 @@ impl LauncherWindow {
     pub fn new(
         root_search: Rc<RefCell<RootSearchOrchestrator>>,
         plugin_host: Rc<RefCell<PluginHost>>,
+        script_host: Rc<RefCell<ScriptHost>>,
         initial_uri: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -86,7 +90,7 @@ impl LauncherWindow {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
-        sync_plugins_to_root_search(&root_search, &plugin_host);
+        sync_external_entries_to_root_search(&root_search, &plugin_host, &script_host);
         let initial_root_view = root_search.borrow_mut().build_root_view("", "all");
         let state = LauncherState::new(crate::state::NavFrame::new(
             "root.search",
@@ -97,6 +101,7 @@ impl LauncherWindow {
             state,
             root_search,
             plugin_host,
+            script_host,
             focus_handle,
             list_scroll: ScrollHandle::new(),
             grid_scroll: ScrollHandle::new(),
@@ -144,11 +149,20 @@ impl LauncherWindow {
 
     pub fn open_uri(&mut self, uri: &str, cx: &mut Context<Self>) {
         let normalized = uri.trim().trim_start_matches("aios://");
-        if normalized == "settings" || normalized == "extensions" {
+        if normalized == "settings" || normalized == "plugins" || normalized == "extensions" {
             self.state.pop_to_root();
             let view = self.plugin_host.borrow().build_settings_view();
             self.state
                 .push(crate::state::NavFrame::new("settings.home", view));
+            self.request_scroll_sync();
+            cx.notify();
+            return;
+        }
+        if normalized == "scripts" {
+            self.state.pop_to_root();
+            let view = self.script_host.borrow().build_manager_view();
+            self.state
+                .push(crate::state::NavFrame::new("scripts.manager", view));
             self.request_scroll_sync();
             cx.notify();
             return;
@@ -314,6 +328,10 @@ impl LauncherWindow {
                     let refreshed = self.plugin_host.borrow().build_settings_view();
                     self.state.current_mut().view = refreshed;
                     self.state.current_mut().clamp_selection();
+                } else if self.state.current().id == "scripts.manager" {
+                    let refreshed = self.script_host.borrow().build_manager_view();
+                    self.state.current_mut().view = refreshed;
+                    self.state.current_mut().clamp_selection();
                 }
                 self.refresh_root_search();
                 self.request_scroll_sync();
@@ -420,13 +438,62 @@ impl LauncherWindow {
         }
     }
 
+    fn apply_script_action_result(
+        &mut self,
+        result: ScriptActionResult,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let side_effects = result
+            .toast
+            .into_iter()
+            .map(HostSideEffect::ShowToast)
+            .collect();
+        self.apply_host_action_result(
+            HostActionResult {
+                response: result.response,
+                side_effects,
+                active_plugin_session: None,
+            },
+            window,
+            cx,
+        );
+    }
+
     pub fn execute_action(&mut self, action_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let was_confirm_alert = matches!(self.state.overlay, Some(ActiveOverlay::ConfirmAlert(_)));
         self.state.overlay = None;
 
-        // 1. Handle Hybrid Plugin Host (WASM, Script Commands, Settings & Extension Manager).
+        // 1a. Handle standalone Script Commands host (`script.*`, `scripts.*`, `core.open-scripts`).
+        let is_script_host_action = action_id.starts_with("script.")
+            || action_id.starts_with("scripts.")
+            || action_id == "core.open-scripts";
+
+        if is_script_host_action {
+            let inline_args = self.state.current().inline_arg_values.clone();
+            let maybe_result = self
+                .script_host
+                .borrow_mut()
+                .dispatch_action(action_id, &inline_args);
+            if let Some(result) = maybe_result {
+                let mutates_scripts = action_id == "scripts.reload"
+                    || action_id.starts_with("script.run:")
+                    || action_id.starts_with("script.confirm:");
+                if mutates_scripts {
+                    sync_external_entries_to_root_search(
+                        &self.root_search,
+                        &self.plugin_host,
+                        &self.script_host,
+                    );
+                }
+                self.apply_script_action_result(result, window, cx);
+                cx.notify();
+                return;
+            }
+        }
+
+        // 1b. Handle WASM Plugin Host (`plugin.*`, `settings.*`, `core.open-settings`).
         let is_plugin_host_action = action_id.starts_with("plugin.")
-            || action_id.starts_with("script.")
             || action_id.starts_with("settings.")
             || action_id == "core.open-settings";
 
@@ -459,12 +526,17 @@ impl LauncherWindow {
                 theme_mode,
             );
             if let Some(result) = maybe_result {
-                let mutates_registry = action_id == "settings.reload-all"
+                let mutates_registry = action_id == "settings.reload-plugins"
+                    || action_id == "settings.reload-all"
                     || action_id == "settings.install-plugin-submit"
                     || action_id.starts_with("settings.plugin-uninstall-confirm:")
                     || action_id.starts_with("plugin.reload:");
                 if mutates_registry {
-                    sync_plugins_to_root_search(&self.root_search, &self.plugin_host);
+                    sync_external_entries_to_root_search(
+                        &self.root_search,
+                        &self.plugin_host,
+                        &self.script_host,
+                    );
                 }
                 self.apply_host_action_result(result, window, cx);
                 cx.notify();
@@ -1607,16 +1679,18 @@ fn active_theme_name(cx: &App) -> &'static str {
     }
 }
 
-fn sync_plugins_to_root_search(
+fn sync_external_entries_to_root_search(
     root_search: &Rc<RefCell<RootSearchOrchestrator>>,
     plugin_host: &Rc<RefCell<PluginHost>>,
+    script_host: &Rc<RefCell<ScriptHost>>,
 ) {
-    let entries: Vec<ExternalRootEntry> = plugin_host
+    let mut entries: Vec<ExternalRootEntry> = plugin_host
         .borrow()
         .root_search_entries()
         .into_iter()
         .map(|entry| ExternalRootEntry {
             id: entry.id,
+            kind: ExternalRootKind::Plugin,
             title: entry.title,
             subtitle: entry.subtitle,
             badge: entry.badge,
@@ -1626,9 +1700,31 @@ fn sync_plugins_to_root_search(
             action_id: entry.action_id,
             secondary_action_id: entry.secondary_action_id,
             tag_label: entry.tag_label,
-            inline_summary: entry.inline_summary,
+            inline_summary: None,
         })
         .collect();
+
+    entries.extend(
+        script_host
+            .borrow()
+            .root_search_entries()
+            .into_iter()
+            .map(|entry| ExternalRootEntry {
+                id: entry.id,
+                kind: ExternalRootKind::ScriptCommand,
+                title: entry.title,
+                subtitle: entry.subtitle,
+                badge: entry.badge,
+                icon_path: None,
+                keywords: entry.keywords,
+                filter_group: entry.filter_group,
+                action_id: entry.action_id,
+                secondary_action_id: entry.secondary_action_id,
+                tag_label: entry.tag_label,
+                inline_summary: entry.inline_summary,
+            }),
+    );
+
     root_search.borrow_mut().set_external_entries(entries);
 }
 
@@ -1636,6 +1732,7 @@ fn open_launcher_window(
     config: &AiosConfig,
     root_search: Rc<RefCell<RootSearchOrchestrator>>,
     plugin_host: Rc<RefCell<PluginHost>>,
+    script_host: Rc<RefCell<ScriptHost>>,
     initial_uri: Option<&str>,
     cx: &mut App,
 ) -> anyhow::Result<WindowHandle<LauncherWindow>> {
@@ -1670,11 +1767,20 @@ fn open_launcher_window(
     let rs_fallback = root_search;
     let ph_primary = Rc::clone(&plugin_host);
     let ph_fallback = plugin_host;
+    let sh_primary = Rc::clone(&script_host);
+    let sh_fallback = script_host;
 
     let handle = cx
         .open_window(layer_opts, move |window, cx| {
             cx.new(|cx| {
-                LauncherWindow::new(rs_primary, ph_primary, uri_owned.as_deref(), window, cx)
+                LauncherWindow::new(
+                    rs_primary,
+                    ph_primary,
+                    sh_primary,
+                    uri_owned.as_deref(),
+                    window,
+                    cx,
+                )
             })
         })
         .or_else(|err| {
@@ -1693,6 +1799,7 @@ fn open_launcher_window(
                     LauncherWindow::new(
                         rs_fallback,
                         ph_fallback,
+                        sh_fallback,
                         uri_fallback.as_deref(),
                         window,
                         cx,
@@ -1707,7 +1814,7 @@ fn open_launcher_window(
 fn open_runtime_hosts(
     config: &AiosConfig,
     paths: &AiosPaths,
-) -> (RootSearchOrchestrator, PluginHost) {
+) -> (RootSearchOrchestrator, PluginHost, ScriptHost) {
     let db = match Database::open(&paths.database_file()) {
         Ok(db) => db,
         Err(err) => {
@@ -1728,7 +1835,8 @@ fn open_runtime_hosts(
         WasmExecutionLimits::default(),
     )
     .expect("failed to initialize AIOS Wasmtime plugin runtime");
-    (orchestrator, plugin_host)
+    let script_host = ScriptHost::new(paths.clone());
+    (orchestrator, plugin_host, script_host)
 }
 
 /// Runs the persistent single-instance AIOS daemon with Unix socket IPC + live XDG portal theme watcher.
@@ -1740,7 +1848,7 @@ pub fn run_daemon_app(
     let (_ipc_server, ipc_rx) = IpcServer::bind(&paths.runtime_socket)?;
     let (_portal_watcher, initial_scheme, portal_rx) = PortalThemeWatcher::spawn();
     let compositor = detect_compositor();
-    let (orchestrator, plugin_host) = open_runtime_hosts(&config, &paths);
+    let (orchestrator, plugin_host, script_host) = open_runtime_hosts(&config, &paths);
 
     tracing::info!(
         socket = %paths.runtime_socket.display(),
@@ -1748,7 +1856,7 @@ pub fn run_daemon_app(
         ?initial_scheme,
         indexed_apps = orchestrator.visible_app_count(),
         wasm_plugins = plugin_host.plugins().len(),
-        script_commands = plugin_host.scripts().len(),
+        script_commands = script_host.scripts().len(),
         "starting AIOS GPUI daemon"
     );
 
@@ -1769,6 +1877,7 @@ pub fn run_daemon_app(
 
             let root_search = Rc::new(RefCell::new(orchestrator));
             let plugin_host = Rc::new(RefCell::new(plugin_host));
+            let script_host = Rc::new(RefCell::new(script_host));
             let shared_icon_resolver = Arc::new(Mutex::new(IconResolver::new()));
             // Pre-warm the XDG icon index on a background thread at daemon startup so
             // subsequent `aios dmenu --show-icons` calls incur 0ms icon-index overhead.
@@ -1791,6 +1900,7 @@ pub fn run_daemon_app(
                     &config,
                     Rc::clone(&root_search),
                     Rc::clone(&plugin_host),
+                    Rc::clone(&script_host),
                     None,
                     cx,
                 )
@@ -1823,6 +1933,7 @@ pub fn run_daemon_app(
             let dmenu_for_ipc = Rc::clone(&active_dmenu);
             let rs_for_ipc = Rc::clone(&root_search);
             let ph_for_ipc = Rc::clone(&plugin_host);
+            let sh_for_ipc = Rc::clone(&script_host);
             let icons_for_ipc = Arc::clone(&shared_icon_resolver);
             cx.spawn(async move |cx| {
                 let _hold = _keep_alive;
@@ -1917,6 +2028,7 @@ pub fn run_daemon_app(
                                         &cfg_for_ipc,
                                         Rc::clone(&rs_for_ipc),
                                         Rc::clone(&ph_for_ipc),
+                                        Rc::clone(&sh_for_ipc),
                                         None,
                                         cx,
                                     ) {
@@ -1938,6 +2050,7 @@ pub fn run_daemon_app(
                                     &cfg_for_ipc,
                                     Rc::clone(&rs_for_ipc),
                                     Rc::clone(&ph_for_ipc),
+                                    Rc::clone(&sh_for_ipc),
                                     None,
                                     cx,
                                 ) {
@@ -1969,6 +2082,7 @@ pub fn run_daemon_app(
                                         &cfg_for_ipc,
                                         Rc::clone(&rs_for_ipc),
                                         Rc::clone(&ph_for_ipc),
+                                        Rc::clone(&sh_for_ipc),
                                         Some(uri),
                                         cx,
                                     ) {
@@ -2022,7 +2136,7 @@ pub fn run_preview_app(
         config.theme.mode = mode;
     }
     let (_portal_watcher, initial_scheme, portal_rx) = PortalThemeWatcher::spawn();
-    let (orchestrator, plugin_host) = open_runtime_hosts(&config, &paths);
+    let (orchestrator, plugin_host, script_host) = open_runtime_hosts(&config, &paths);
 
     gpui_platform::application()
         .with_assets(crate::fonts::AiosAssetSource)
@@ -2039,10 +2153,12 @@ pub fn run_preview_app(
 
             let root_search = Rc::new(RefCell::new(orchestrator));
             let plugin_host = Rc::new(RefCell::new(plugin_host));
+            let script_host = Rc::new(RefCell::new(script_host));
             let handle = open_launcher_window(
                 &config,
                 root_search,
                 plugin_host,
+                script_host,
                 initial_uri.as_deref(),
                 cx,
             )
@@ -2074,7 +2190,7 @@ pub fn run_dev_plugin_app(
         config.theme.mode = mode;
     }
     let (_portal_watcher, initial_scheme, portal_rx) = PortalThemeWatcher::spawn();
-    let (orchestrator, mut plugin_host) = open_runtime_hosts(&config, &paths);
+    let (orchestrator, mut plugin_host, script_host) = open_runtime_hosts(&config, &paths);
     let initial_bundle = plugin_host
         .attach_dev_plugin(&dev_dir)
         .expect("dev plugin directory must contain valid aios-plugin.toml and .wasm");
@@ -2121,9 +2237,16 @@ pub fn run_dev_plugin_app(
 
             let root_search = Rc::new(RefCell::new(orchestrator));
             let plugin_host = Rc::new(RefCell::new(plugin_host));
-            let handle =
-                open_launcher_window(&config, root_search, Rc::clone(&plugin_host), None, cx)
-                    .expect("failed to open AIOS plugin dev window");
+            let script_host = Rc::new(RefCell::new(script_host));
+            let handle = open_launcher_window(
+                &config,
+                root_search,
+                Rc::clone(&plugin_host),
+                Rc::clone(&script_host),
+                None,
+                cx,
+            )
+            .expect("failed to open AIOS plugin dev window");
 
             let init_pid = target_plugin_id.clone();
             let init_cid = target_cmd_id.clone();
@@ -2155,7 +2278,11 @@ pub fn run_dev_plugin_app(
                                     .plugin_host
                                     .borrow_mut()
                                     .attach_dev_plugin(&dev_dir_for_reload);
-                                sync_plugins_to_root_search(&view.root_search, &view.plugin_host);
+                                sync_external_entries_to_root_search(
+                                    &view.root_search,
+                                    &view.plugin_host,
+                                    &view.script_host,
+                                );
                                 let cmd = bundle
                                     .manifest
                                     .commands

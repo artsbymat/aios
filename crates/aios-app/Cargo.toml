@@ -14,6 +14,7 @@ aios-core = { workspace = true }
 aios-daemon = { workspace = true }
 aios-fuzzy = { workspace = true }
 aios-plugin-host = { workspace = true }
+aios-scripts = { workspace = true }
 aios-ui = { workspace = true }
 aios-wayland = { workspace = true }
 anyhow = { workspace = true }

@@ -35,7 +35,8 @@ aios/
     aios-core/               # Domain models, view AST, config, SQLite storage, actions
     aios-wayland/            # Layer-shell helpers, Hyprland & Niri IPC, clipboard, portal theme
     aios-plugin-sdk/         # Guest & native plugin ergonomic Rust API + view builders
-    aios-plugin-host/        # Wasmtime host runtime, capability sandbox, script runner, registry
+    aios-plugin-host/        # Wasmtime host runtime, capability sandbox, WASM registry & settings
+    aios-scripts/            # Standalone Script Commands runner, discovery, inline cache & manager UI
     aios-builtin/            # Core built-in providers (Root Search orchestrator, Application Launcher)
     aios-ui/                 # GPUI theme system, reusable components, 6 view renderers
     aios-daemon/             # Background daemon (Unix socket IPC, clipboard watcher, refresh scheduler)

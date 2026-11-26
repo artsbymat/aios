@@ -1,4 +1,4 @@
-//! Declarative Settings & Extension Manager views built with AIOS's own Multi-View UI AST.
+//! Declarative Settings & Plugins views built with AIOS's own Multi-View UI AST.
 
 use std::collections::HashMap;
 
@@ -10,19 +10,17 @@ use aios_plugin_sdk::{
 };
 
 use crate::manifest::InstalledPlugin;
-use crate::scripts::ScriptCommand;
 
-/// Builds the main Settings & Extension Manager `List + Split Detail` view.
+/// Builds the main Settings & Plugins `List + Split Detail` view.
 #[must_use]
 pub fn build_settings_home_view(
     config: &AiosConfig,
     paths: &AiosPaths,
     plugins: &[InstalledPlugin],
-    scripts: &[ScriptCommand],
     permissions_by_plugin: &HashMap<String, HashMap<String, bool>>,
 ) -> ViewNode {
-    let mut builder = ListViewBuilder::new("AIOS Settings & Extensions")
-        .placeholder("Search settings, plugins, capabilities, or scripts...")
+    let mut builder = ListViewBuilder::new("AIOS Settings & Plugins")
+        .placeholder("Search settings, WASM plugins, or capabilities...")
         .showing_detail(true)
         .filter_dropdown(
             "Filter Settings",
@@ -35,10 +33,6 @@ pub fn build_settings_home_view(
                 FilterOption {
                     id: "plugins".to_string(),
                     title: "WASM Plugins".to_string(),
-                },
-                FilterOption {
-                    id: "scripts".to_string(),
-                    title: "Script Commands".to_string(),
                 },
                 FilterOption {
                     id: "general".to_string(),
@@ -145,7 +139,7 @@ pub fn build_settings_home_view(
                             .shortcut("Enter"),
                     )
                     .action(
-                        ActionItem::new("settings.reload-all", "Reload Plugins & Scripts")
+                        ActionItem::new("settings.reload-plugins", "Reload WASM Plugins")
                             .shortcut("Ctrl+Enter"),
                     )
                     .build(),
@@ -336,68 +330,9 @@ pub fn build_settings_home_view(
         );
     }
 
-    // Section 3: Script Commands
-    if !scripts.is_empty() {
-        let script_items = scripts
-            .iter()
-            .map(|sc| {
-                ListItemBuilder::new(format!("ext-script:{}", sc.id), sc.title.clone())
-                    .subtitle(
-                        sc.package_name
-                            .clone()
-                            .unwrap_or_else(|| "Script Command".to_string()),
-                    )
-                    .icon("SH")
-                    .filter_group("scripts")
-                    .keyword("script")
-                    .keyword(sc.mode.label())
-                    .accessory_tag(sc.mode.label(), SemanticTone::Neutral)
-                    .detail(
-                        format!(
-                            "# {}\n\n{}\n\n- Mode: `{}`\n- Needs confirmation: `{}`\n- Arguments: `{}`",
-                            sc.title,
-                            sc.description
-                                .as_deref()
-                                .unwrap_or("User script command discovered in scripts directory."),
-                            sc.mode.label(),
-                            sc.needs_confirmation,
-                            sc.arguments.len()
-                        ),
-                        vec![
-                            MetadataEntry::Label {
-                                title: "Script ID".to_string(),
-                                text: sc.id.clone(),
-                            },
-                            MetadataEntry::Link {
-                                title: "Path".to_string(),
-                                text: sc.path.display().to_string(),
-                                target: sc.path.display().to_string(),
-                            },
-                        ],
-                    )
-                    .actions(ActionPanel::from_actions(vec![
-                        ActionItem::new(format!("script.run:{}", sc.id), "Run Script Command")
-                            .shortcut("Enter"),
-                        ActionItem::new(
-                            format!("script.copy-path:{}", sc.id),
-                            "Copy Script Path",
-                        )
-                        .shortcut("Ctrl+Enter"),
-                    ]))
-                    .build()
-            })
-            .collect();
-
-        builder = builder.section(
-            Some("Script Commands"),
-            Some(&format!("{} discovered", scripts.len())),
-            script_items,
-        );
-    }
-
     builder
         .empty_view(EmptyView {
-            title: "No matching settings or extensions".to_string(),
+            title: "No matching settings or plugins".to_string(),
             description: Some(
                 "Press Esc to clear the filter or install a local WASM plugin.".to_string(),
             ),

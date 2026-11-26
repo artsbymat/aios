@@ -16,8 +16,7 @@ use std::time::Duration;
 
 use aios_core::{AiosConfig, AiosPaths, Database, view::ViewNode};
 use aios_plugin_host::{
-    DevReloadEvent, HostSideEffect, PluginDevWatcher, PluginHost, ScriptMode, WasmExecutionLimits,
-    discover_script_commands,
+    DevReloadEvent, HostSideEffect, PluginDevWatcher, PluginHost, WasmExecutionLimits,
 };
 use aios_plugin_sdk::{
     ActionItem, ActionPanel, ActionPanelBuilder, FormField, FormViewBuilder, GridAspectRatio,
@@ -622,66 +621,6 @@ mode = "view"
     assert!(matches!(
         trap_res.response,
         PluginResponse::Push { ref view, .. } if matches!(view.as_ref(), ViewNode::Error(e) if e.detail.as_deref().unwrap_or("").contains("WASM trap"))
-    ));
-}
-
-#[test]
-fn reference_script_commands_and_confirmation_flow_run_end_to_end() {
-    let tmp = TempDir::new().expect("temp dir");
-    let (paths, _db, mut host) = test_host(&tmp);
-
-    // Copy both reference scripts from examples/scripts/ into temp XDG scripts dir.
-    for file in ["system-uptime.sh", "disk-usage.sh"] {
-        let src = repo_root().join("examples/scripts").join(file);
-        let dst = paths.scripts_dir().join(file);
-        fs::copy(&src, &dst).expect("copy script");
-    }
-    // Add a destructive script requiring explicit confirmation.
-    fs::write(
-        paths.scripts_dir().join("danger-clean.sh"),
-        "#!/usr/bin/env sh\n# @aios.schemaVersion 1\n# @aios.title Clean Temp Cache\n# @aios.mode silent\n# @aios.needsConfirmation true\necho \"Cleaned $1\"\n",
-    )
-    .expect("write confirm script");
-
-    let discovered = discover_script_commands(&paths.scripts_dir());
-    assert_eq!(discovered.len(), 3);
-    assert!(
-        discovered
-            .iter()
-            .any(|s| s.id == "script:system-uptime" && s.mode == ScriptMode::Inline)
-    );
-    assert!(discovered.iter().any(|s| s.id == "script:disk-usage"
-        && s.mode == ScriptMode::FullOutput
-        && s.arguments.len() == 1));
-
-    host.reload_all();
-    // Inline script summary should already be populated in Root Search entries.
-    let uptime_entry = host
-        .root_search_entries()
-        .into_iter()
-        .find(|e| e.id == "script:system-uptime")
-        .expect("uptime root entry");
-    assert!(uptime_entry.inline_summary.is_some());
-
-    // Run `disk-usage` (fullOutput) with argument `/tmp` -> returns DetailView with Copy Output.
-    let du_res = host.run_script("script:disk-usage", &["/tmp".to_string()], false);
-    assert!(matches!(
-        du_res.response,
-        PluginResponse::Push { ref view, .. } if matches!(view.as_ref(), ViewNode::Detail(d) if d.markdown.contains("/tmp"))
-    ));
-
-    // Run `danger-clean` -> first returns ConfirmAlert, then executes after confirmation.
-    let confirm_req = host.run_script("script:danger-clean", &["cache".to_string()], false);
-    let alert_id = match confirm_req.response {
-        PluginResponse::Confirm { alert } => alert.id,
-        other => panic!("expected ConfirmAlert, got {other:?}"),
-    };
-    let after_confirm = host
-        .dispatch_host_action(&alert_id, &[], None, "dark")
-        .expect("confirm execution");
-    assert!(matches!(
-        after_confirm.response,
-        PluginResponse::CloseWindow { hud: Some(h) } if h.title == "Cleaned cache"
     ));
 }
 

@@ -22,10 +22,18 @@ use crate::desktop::{
     DesktopApp, launch_desktop_app, open_url_detached, scan_desktop_applications,
 };
 
-/// External plugin or Script Command entry projected into Root Search.
+/// Category of an external entry projected into Root Search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalRootKind {
+    Plugin,
+    ScriptCommand,
+}
+
+/// External WASM plugin or Script Command entry projected into Root Search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalRootEntry {
     pub id: String,
+    pub kind: ExternalRootKind,
     pub title: String,
     pub subtitle: String,
     pub badge: String,
@@ -274,8 +282,9 @@ impl RootSearchOrchestrator {
             if trimmed.is_empty() {
                 let mut pinned_items = Vec::new();
                 let mut frequent_items = Vec::new();
+                let mut plugin_items = Vec::new();
+                let mut script_items = Vec::new();
                 let mut app_items = Vec::new();
-                let mut extension_items = Vec::new();
                 let mut command_items = Vec::new();
 
                 for ranked in &snap.matches {
@@ -290,9 +299,12 @@ impl RootSearchOrchestrator {
                     } else if hits > 0 {
                         frequent_items.push(list_item);
                     } else {
-                        match entry.kind {
+                        match &entry.kind {
                             RootEntryKind::Application(_) => app_items.push(list_item),
-                            RootEntryKind::External(_) => extension_items.push(list_item),
+                            RootEntryKind::External(ext) => match ext.kind {
+                                ExternalRootKind::Plugin => plugin_items.push(list_item),
+                                ExternalRootKind::ScriptCommand => script_items.push(list_item),
+                            },
                             RootEntryKind::CoreCommand { .. } => command_items.push(list_item),
                         }
                     }
@@ -312,11 +324,18 @@ impl RootSearchOrchestrator {
                         items: frequent_items,
                     });
                 }
-                if !extension_items.is_empty() {
+                if !plugin_items.is_empty() {
                     sections.push(ListSection {
-                        title: Some("Plugins & Scripts".to_string()),
-                        subtitle: Some(format!("{}", extension_items.len())),
-                        items: extension_items,
+                        title: Some("Plugins".to_string()),
+                        subtitle: Some(format!("{}", plugin_items.len())),
+                        items: plugin_items,
+                    });
+                }
+                if !script_items.is_empty() {
+                    sections.push(ListSection {
+                        title: Some("Script Commands".to_string()),
+                        subtitle: Some(format!("{}", script_items.len())),
+                        items: script_items,
                     });
                 }
                 if !app_items.is_empty() {
@@ -421,6 +440,14 @@ impl RootSearchOrchestrator {
                     FilterOption {
                         id: "apps".to_string(),
                         title: "Applications".to_string(),
+                    },
+                    FilterOption {
+                        id: "plugins".to_string(),
+                        title: "Plugins".to_string(),
+                    },
+                    FilterOption {
+                        id: "scripts".to_string(),
+                        title: "Script Commands".to_string(),
                     },
                     FilterOption {
                         id: "commands".to_string(),
@@ -780,14 +807,21 @@ impl RootSearchOrchestrator {
                         value: format!("alias: {alias}"),
                     });
                 }
+                let tag_tone = match ext.kind {
+                    ExternalRootKind::Plugin => SemanticTone::Accent,
+                    ExternalRootKind::ScriptCommand => SemanticTone::Neutral,
+                };
                 accessories.push(Accessory::Tag {
                     label: ext.tag_label.clone(),
-                    tone: SemanticTone::Accent,
+                    tone: tag_tone,
                 });
 
+                let primary_label = match ext.kind {
+                    ExternalRootKind::Plugin => format!("Open {}", ext.title),
+                    ExternalRootKind::ScriptCommand => format!("Run {}", ext.title),
+                };
                 let mut actions = vec![
-                    ActionItem::new(ext.action_id.clone(), format!("Open {}", ext.title))
-                        .shortcut("Enter"),
+                    ActionItem::new(ext.action_id.clone(), primary_label).shortcut("Enter"),
                 ];
                 if let Some((sec_id, sec_title)) = &ext.secondary_action_id {
                     actions.push(
@@ -861,18 +895,26 @@ fn build_corpus(
     let core_commands = [
         (
             "core:settings",
-            "Settings & Extensions",
-            "Manage themes, aliases, WASM plugins, capabilities, and scripts",
+            "Settings & Plugins",
+            "Manage themes, aliases, WASM plugins, preferences, and capabilities",
             "ST",
             "core.open-settings",
             vec![
                 "settings",
-                "extensions",
                 "plugins",
-                "scripts",
+                "wasm",
+                "extensions",
                 "preferences",
                 "capabilities",
             ],
+        ),
+        (
+            "core:scripts",
+            "Script Commands",
+            "Browse, run, and reload local scripts in ~/.config/aios/scripts",
+            "SH",
+            "core.open-scripts",
+            vec!["scripts", "script", "commands", "shell", "bash", "automation"],
         ),
         (
             "core:reload-apps",
@@ -1168,5 +1210,76 @@ mod tests {
             expand_fallback_template("https://docs.rs/releases/search?query={query}", "gpui ce"),
             "https://docs.rs/releases/search?query=gpui%20ce"
         );
+    }
+
+    #[test]
+    fn plugins_and_script_commands_have_separate_sections_and_filters() {
+        let mut orch = RootSearchOrchestrator::from_apps(AiosConfig::default(), None, Vec::new());
+        orch.set_external_entries(vec![
+            ExternalRootEntry {
+                id: "plugin:com.example.demo:open".to_string(),
+                kind: ExternalRootKind::Plugin,
+                title: "Demo Plugin".to_string(),
+                subtitle: "Demo".to_string(),
+                badge: "WM".to_string(),
+                icon_path: None,
+                keywords: vec!["plugin".to_string()],
+                filter_group: "plugins",
+                action_id: "plugin.run:com.example.demo:open".to_string(),
+                secondary_action_id: None,
+                tag_label: "WASM Plugin".to_string(),
+                inline_summary: None,
+            },
+            ExternalRootEntry {
+                id: "script:uptime".to_string(),
+                kind: ExternalRootKind::ScriptCommand,
+                title: "System Uptime".to_string(),
+                subtitle: "System".to_string(),
+                badge: "SH".to_string(),
+                icon_path: None,
+                keywords: vec!["script".to_string()],
+                filter_group: "scripts",
+                action_id: "script.run:script:uptime".to_string(),
+                secondary_action_id: None,
+                tag_label: "Script · inline".to_string(),
+                inline_summary: Some("up 2h".to_string()),
+            },
+        ]);
+
+        let ViewNode::List(all_list) = orch.build_root_view("", "all") else {
+            panic!("expected list view");
+        };
+        let section_titles: Vec<Option<&str>> = all_list
+            .sections
+            .iter()
+            .map(|s| s.title.as_deref())
+            .collect();
+        assert!(section_titles.contains(&Some("Plugins")));
+        assert!(section_titles.contains(&Some("Script Commands")));
+        assert!(!section_titles.contains(&Some("Plugins & Scripts")));
+
+        let ViewNode::List(plugins_only) = orch.build_root_view("", "plugins") else {
+            panic!("expected list view");
+        };
+        assert_eq!(plugins_only.sections.len(), 1);
+        assert_eq!(plugins_only.sections[0].title.as_deref(), Some("Plugins"));
+        assert_eq!(plugins_only.sections[0].items.len(), 1);
+
+        let ViewNode::List(scripts_only) = orch.build_root_view("", "scripts") else {
+            panic!("expected list view");
+        };
+        assert_eq!(scripts_only.sections.len(), 1);
+        assert_eq!(
+            scripts_only.sections[0].title.as_deref(),
+            Some("Script Commands")
+        );
+        assert_eq!(scripts_only.sections[0].items.len(), 1);
+
+        let ViewNode::List(core_only) = orch.build_root_view("", "commands") else {
+            panic!("expected list view");
+        };
+        assert_eq!(core_only.sections.len(), 1);
+        assert_eq!(core_only.sections[0].title.as_deref(), Some("AIOS Core"));
+        assert!(core_only.sections[0].items.iter().any(|i| i.id == "core:scripts"));
     }
 }

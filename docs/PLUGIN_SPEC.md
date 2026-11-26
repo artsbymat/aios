@@ -10,7 +10,7 @@ AIOS achieves Raycast-level extensibility in Pure Rust through a **three-tier Hy
 | ----------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
 | **Tier 1: Built-in Core**           | Compiled Rust crates (`aios-builtin`)                                             | Strictly minimal core: Root Search Orchestrator and XDG Application Launcher                                                                                       | In-process (trusted core)                                          |
 | **Tier 2: External WASM Plugins**   | `wasmtime` + WebAssembly Component Model (`wit/aios-plugin.wit`, `wasm32-wasip2`) | First-party & community multi-view extensions (Calculator, Quicklinks, Hyprland/Niri Window Management, System Commands, Clipboard, Files, Notes, future AI Chat) | Full memory sandbox, explicit capability gates, fuel/epoch timeout |
-| **Tier 3: Script Commands**         | Local executables / shell / Python / Rust scripts with metadata headers           | Fast personal automation without compiling WASM                                                                                                                    | Subprocess timeout, explicit confirmation option                   |
+| **Tier 3: Script Commands**         | Standalone `aios-scripts` crate (local executables / shell / Python / Rust scripts with metadata headers) | Fast personal automation without compiling WASM                                                                                                                    | Subprocess timeout, explicit confirmation option                   |
 
 ---
 
@@ -258,7 +258,9 @@ needs_confirmation = true
 
 ---
 
-## 6. Script Commands (Tier 3)
+## 6. Script Commands (Standalone `aios-scripts` Runtime)
+
+Script Commands run through their own dedicated crate (`aios-scripts` / `ScriptHost`), separate from the Wasmtime `aios-plugin-host` runtime, with their own Root Search section (`Script Commands`), filter option (`scripts`), manager view (`aios://scripts`), and CLI (`aios script list`, `aios script run <id> [args...]`, `aios script dir`).
 
 Users can drop executable scripts into `~/.config/aios/scripts/` with structured metadata comments at the top of the file:
 
