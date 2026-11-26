@@ -11,7 +11,7 @@ use gpui::{
     px,
 };
 
-use crate::components::{aios_brand_mark, popover_shadow};
+use crate::components::aios_brand_mark;
 use crate::theme::AiosTheme;
 
 struct HudPillView {
@@ -25,35 +25,26 @@ impl Render for HudPillView {
 
         div()
             .size_full()
+            .px(px(14.0))
             .flex()
+            .flex_row()
             .items_center()
             .justify_center()
-            .p(px(6.0))
+            .gap(px(10.0))
+            .rounded(theme.metrics.radius_lg)
+            .bg(c.bg_elevated)
+            .border_1()
+            .border_color(c.border_default)
+            .overflow_hidden()
+            .child(aios_brand_mark(theme))
             .child(
                 div()
-                    .w_full()
-                    .h_full()
-                    .px(px(14.0))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(10.0))
-                    .rounded(theme.metrics.radius_lg)
-                    .bg(c.bg_elevated)
-                    .border_1()
-                    .border_color(c.border_default)
-                    .shadow(popover_shadow(theme))
-                    .child(aios_brand_mark(theme))
-                    .child(
-                        div()
-                            .text_color(c.text_primary)
-                            .font(theme.sans_font())
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .truncate()
-                            .child(self.title.clone()),
-                    ),
+                    .text_color(c.text_primary)
+                    .font(theme.sans_font())
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .truncate()
+                    .child(self.title.clone()),
             )
     }
 }
@@ -63,7 +54,7 @@ impl Render for HudPillView {
 pub fn show_hud_pill(title: String, cx: &mut App) {
     let bounds = Bounds {
         origin: point(px(0.0), px(0.0)),
-        size: Size::new(px(280.0), px(52.0)),
+        size: Size::new(px(268.0), px(40.0)),
     };
 
     let layer_options = WindowOptions::new()

@@ -37,7 +37,6 @@ use gpui::{
 use crate::components::{
     aios_brand_mark, back_arrow_icon, enter_keycap, keycap, loading_progress_bar, popover_shadow,
     render_confirm_alert_card, render_empty_state, render_error_state, render_footer_toast,
-    window_shadow,
 };
 use crate::demo::{build_root_showcase_frame, dispatch_demo_action, open_deep_link};
 use crate::dmenu::{DmenuOutcome, DmenuWindow, open_dmenu_window, parse_theme_override};
@@ -1307,6 +1306,7 @@ impl LauncherWindow {
             .border_t_1()
             .border_color(c.border_subtle)
             .bg(c.bg_subtle)
+            .rounded_b(theme.metrics.radius_window - px(1.0))
             .flex()
             .flex_row()
             .items_center()
@@ -1590,6 +1590,7 @@ impl LauncherWindow {
                     div()
                         .absolute()
                         .inset_0()
+                        .rounded(theme.metrics.radius_window - px(1.0))
                         .bg(c.bg_scrim)
                         .flex()
                         .items_center()
@@ -1652,7 +1653,6 @@ impl Render for LauncherWindow {
             .border_color(c.border_default)
             .font(theme.sans_font())
             .text_color(c.text_primary)
-            .shadow(window_shadow(&theme))
             .child(self.render_header(&theme, cx))
             .child(
                 div()
