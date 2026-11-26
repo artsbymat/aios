@@ -139,7 +139,7 @@ aios/
 - [x] Implement `aios-plugin-sdk` crate so plugin authors write idiomatic Rust declarative views compiled to `wasm32-wasip2`.
 - [x] Implement **Script Commands** runner (metadata header parser, `compact`/`fullOutput`/`inline`/`silent` modes, arguments, confirmation prompts).
 - [x] Implement **Settings & Extension Manager View** (built using AIOS's own multi-view UI): manage themes, aliases, hotkeys, fallback commands, plugin preferences, capability approvals, and local plugin install/uninstall.
-- [x] **Exit Criteria**: Reference external WASM plugin (`com.aios.palette-grid` `Grid+Form` with `icon.svg`), isolated List+Detail + capability-gate WASM fixtures, Script Commands (`system-uptime.sh`, `disk-usage.sh`), and hybrid `aios dmenu` (`stdin -> stdout` via daemon IPC + standalone fallback) run end-to-end inside AIOS with full isolation.
+- [x] **Exit Criteria**: Isolated `List+Detail`, `Grid+Form`, and capability-gate WASM fixtures, Script Commands (`system-uptime.sh`, `disk-usage.sh`), and hybrid `aios dmenu` (`stdin -> stdout` via daemon IPC + standalone fallback) run end-to-end inside AIOS with full isolation.
 
 ### Phase 5: First-Party External Plugins Suite (1 Sub-Phase per Plugin) `[PENDING]`
 
@@ -147,7 +147,8 @@ aios/
 
 #### Phase 5.1: Inline Calculator & Converter Plugin `[DONE]`
 - [x] Add lightweight dynamic inline query hook in Root Search (`aios-builtin`) + `PluginEvent::SearchChanged` forwarding in `LauncherWindow` so math/unit expressions preview live without opening a separate view first (hybrid auto-detect + optional `=` exclusive prefix with sub-microsecond fast-gate).
-- [x] Build first-party plugin (`com.aios.calculator` in `crates/aios-plugins`): live math expressions, hex/bin/octal & bitwise, units (length, weight, temp, data SI/IEC, time, speed, area, CSS `px/rem/em/pt`), date/timezone math, cached offline currency converter, configurable preferences (`base_font_px`, `decimal_places`, `default_currency`), and SQLite calculation history.
+- [x] Build first-party external WASM plugin (`com.aios.calculator` in `plugins/com.aios.calculator/`, sharing pure logic from `crates/aios-plugins`): live math expressions, hex/bin/octal & bitwise, units (length, weight, volume, temp, data SI/IEC, time, speed, area, CSS `px/rem/em/pt`), date/timezone math, cached offline-first live currency converter, configurable preferences (`base_font_px`, `decimal_places`, `default_currency`, `currency_refresh_interval`), and SQLite calculation history.
+- [x] **External Plugin Ecosystem & Zero-Cost Store**: Two-layer plugin discovery (`Bundled` + `UserInstalled`), `plugin_state` enable/disable without deleting bundled bundles, `aios-plugin-sdk` guest SDK (`AiosPlugin` + `export_plugin!`), `aios plugin new/build/dev/pack/search/install/update/enable/disable/registry-build` CLI, SHA-256 verified `.aios-plugin` archives, GitHub-native static `registry/index.json` + CI workflows, and native `aios://store` UI.
 - [x] **Manual Check & Exit Criteria**: Typing `24 * 12`, `=pi`, `0xff to dec`, `100 cm to in`, `24 px to rem`, `100 usd to idr`, `today + 14d`, `now in tokyo`, or opening Calculator works offline with instant copy (`Enter`), `Ctrl+Enter` drill-down, complete Empty/Error states, and Dark/Light parity.
 
 #### Phase 5.2: Quicklinks Plugin `[PENDING]`
@@ -213,7 +214,7 @@ aios/
 
 - [ ] Startup & cold-toggle profiling (target: daemon memory < 40MB idle, toggle-to-first-frame < 16ms).
 - [ ] Config & data export/import (`aios export` / `aios import`) for local backups.
-- [ ] Local/Git plugin registry & `aios plugin install <source>` workflow.
+- [x] Local/Git/GitHub-native plugin registry, native Plugin Store (`aios://store`), and `aios plugin new/build/pack/search/install/update` workflow.
 - [ ] Packaging scripts for Arch Linux (`PKGBUILD` / AUR), Nix flake, and systemd user service (`aios-daemon.service`).
 - [ ] Authoring guide for external WASM plugins (including blueprint for the future optional **AI Chat plugin**).
 - [ ] **Exit Criteria**: Verified release builds, clean packaging definitions, and complete plugin authoring documentation.

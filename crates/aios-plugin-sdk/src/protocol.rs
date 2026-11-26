@@ -37,6 +37,35 @@ pub enum PluginEvent {
     },
     /// Emitted by the background scheduler for `MenuBar` or cache-warming commands.
     BackgroundRefresh { command_id: String },
+    /// Emitted by Root Search when a query passes a plugin's declarative `[inline_trigger]` fast-gate.
+    InlineQuery { query: String },
+    /// Emitted when the user activates an inline Root Search action (e.g. `Enter` to copy & close).
+    InlineAction { action_id: String },
+}
+
+/// Result emitted by an opt-in inline Root Search plugin (for example Calculator) when a query
+/// passes its fast-gate check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InlinePluginResult {
+    pub id: String,
+    pub plugin_id: String,
+    pub command_id: String,
+    pub section_title: String,
+    #[serde(default)]
+    pub section_subtitle: Option<String>,
+    pub title: String,
+    pub subtitle: String,
+    pub badge: String,
+    #[serde(default)]
+    pub icon_path: Option<String>,
+    pub tag_label: String,
+    pub copy_value: String,
+    pub copy_action_id: String,
+    pub open_action_id: String,
+    pub open_action_title: String,
+    /// When `true` (e.g. explicit `=...` prefix), Root Search focuses exclusively on inline results.
+    #[serde(default)]
+    pub exclusive: bool,
 }
 
 /// Declarative response returned by `lifecycle::init-command`, `handle-event`, or `background-refresh`.
@@ -71,6 +100,8 @@ pub enum PluginResponse {
     OpenUrl { url: String },
     /// Publishes an updated status item for a `MenuBar` command (Waybar / SNI bridge).
     MenuBar { state: MenuBarState },
+    /// Response to [`PluginEvent::InlineQuery`] for live Root Search previews.
+    InlineResult { result: Option<Box<InlinePluginResult>> },
     /// Explicit no-op response (useful for `no-view` commands that already triggered host APIs).
     Noop,
 }

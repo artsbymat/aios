@@ -303,8 +303,21 @@ Because AI Chat is intentionally excluded from AIOS core (100% local-first v1), 
 
 ---
 
-## 8. First-Party Plugins Documentation (`crates/aios-plugins`)
+## 8. External Plugin Ecosystem, Bundled Defaults & Zero-Cost Plugin Store
 
-First-party plugins run natively inside `aios-plugin-host` using the same declarative `aios-plugin-sdk` view contract, SQLite KV storage, and Settings preferences UI while remaining decoupled from `aios-builtin`:
+AIOS ships Phase 5 productivity plugins as **external WebAssembly Component Model (`wasm32-wasip2`) bundles** using a **Two-Layer Discovery** model:
 
-- [Calculator & Converter (`com.aios.calculator`)](plugins/calculator.md): Hybrid zero-prefix + `=` exclusive trigger, math/scientific functions, programmer bases & bitwise ops, unit & CSS converter, date/timezone math, 26-currency offline converter, SQLite history, and configurable preferences.
+1. **Bundled Defaults Layer**: Shipped default bundles (such as `dist/plugins/com.aios.calculator/` or `/usr/share/aios/plugins/`) are loaded automatically out-of-the-box and can be cleanly enabled or disabled in SQLite (`plugin_state`) without deleting system files.
+2. **User Installed / Upgraded Layer**: Plugins installed into `$XDG_DATA_HOME/aios/plugins/<id>/` always shadow bundled plugins of the same ID, allowing users to upgrade official plugins independently from the Plugin Store.
+3. **Declarative Inline Fast-Gate (`[inline_trigger]`)**: External WASM plugins that provide live Root Search previews declare `[inline_trigger]` (`prefixes`, `match_numeric_expressions`, `leading_chars`, `leading_keywords`) in `aios-plugin.toml`. The host evaluates the fast-gate in `< 50 ns` so normal app queries never invoke Wasmtime.
+4. **Developer Experience (`aios-plugin-sdk` + `aios plugin ...` CLI)**:
+   - Enable `aios-plugin-sdk = { ..., features = ["guest"] }`, implement `AiosPlugin`, and invoke `aios_plugin_sdk::export_plugin!(MyPlugin);`.
+   - CLI workflow: `aios plugin new <name>`, `aios plugin build .`, `aios plugin dev .`, `aios plugin pack .` (creates `.aios-plugin` `.tar.gz` + SHA-256 + registry TOML snippet).
+5. **Zero-Cost GitHub-Native Registry & Plugin Store (`aios://store`)**:
+   - Authors host `.aios-plugin` tarballs on **GitHub Releases** (automated by the scaffolded `.github/workflows/release.yml`) and submit 1 TOML file to `registry/plugins/<id>.toml`.
+   - GitHub Actions verifies schema + SHA-256 and compiles `registry/index.json` for GitHub Pages / jsDelivr CDN (`$0/month`).
+   - Users browse, search, install, update, and toggle plugins directly in **Plugin Store (`aios://store`)** or via `aios plugin search / install / update / enable / disable` (also supports `aios plugin install github:<owner>/<repo>` and offline `.aios-plugin` archives).
+
+First-party plugin documentation:
+
+- [Calculator & Converter (`com.aios.calculator`)](plugins/calculator.md): External `wasm32-wasip2` bundled plugin (`plugins/com.aios.calculator/`) with hybrid zero-prefix + `=` exclusive trigger, math/scientific functions, programmer bases & bitwise ops, unit/volume/CSS converter, date/timezone math, cached live currency converter, SQLite history, and configurable preferences.

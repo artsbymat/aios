@@ -145,7 +145,7 @@ fn main() {
         ping_us, toggle_us, stream_ms
     );
 
-    // 3. Wasmtime Component Model cold compile vs warm cached calls (`palette-grid-wasm`)
+    // 3. Wasmtime Component Model cold compile vs warm cached calls (`com.aios.calculator`)
     let shared_db = Arc::new(Mutex::new(db));
     let mut host = PluginHost::new(
         AiosConfig::default(),
@@ -155,27 +155,27 @@ fn main() {
     )
     .expect("plugin host");
 
-    let palette_dir = repo_root().join("examples/plugins/palette-grid-wasm");
-    host.install_local_plugin(&palette_dir)
-        .expect("install palette-grid-wasm");
+    let calc_dir = repo_root().join("plugins/com.aios.calculator");
+    host.install_local_plugin(&calc_dir)
+        .expect("install com.aios.calculator");
 
     let t_cold = Instant::now();
-    let _ = host.run_wasm_command("com.aios.palette-grid", "swatches", "[]", "dark");
+    let _ = host.run_wasm_command("com.aios.calculator", "calculator", "[]", "dark");
     let wasm_cold_ms = t_cold.elapsed().as_secs_f64() * 1000.0;
 
     let t_warm = Instant::now();
     for _ in 0..50 {
-        let _ = host.run_wasm_command("com.aios.palette-grid", "swatches", "[]", "dark");
+        let _ = host.run_wasm_command("com.aios.calculator", "calculator", "[]", "dark");
     }
     let wasm_warm_ms = t_warm.elapsed().as_secs_f64() * 1000.0 / 50.0;
 
     let ev = PluginEvent::SearchTextChanged {
-        command_id: "swatches".to_string(),
-        query: "copper".to_string(),
+        command_id: "calculator".to_string(),
+        query: "24 * 12".to_string(),
     };
     let t_ev = Instant::now();
     for _ in 0..50 {
-        let _ = host.send_wasm_event("com.aios.palette-grid", "swatches", &ev, "dark");
+        let _ = host.send_wasm_event("com.aios.calculator", "calculator", &ev, "dark");
     }
     let wasm_ev_ms = t_ev.elapsed().as_secs_f64() * 1000.0 / 50.0;
 

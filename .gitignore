@@ -1,4 +1,7 @@
 /target
+plugins/*/target
+dist/releases/
+registry/index.json
 **/*.rs.bk
 *.db
 *.db-shm

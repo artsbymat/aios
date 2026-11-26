@@ -1,0 +1,15 @@
+id = "com.aios.calculator"
+name = "Calculator & Converter"
+author = "AIOS"
+description = "Inline math, hex/bin/octal, unit, volume, CSS, date/timezone, and cached offline-first currency converter."
+repository = "https://github.com/artsbymat/aios"
+category = "productivity"
+tags = ["calculator", "math", "units", "volume", "currency", "timezone", "date"]
+capabilities = ["clipboard_write"]
+
+[latest]
+version = "0.1.0"
+min_aios_version = "0.1.0"
+download_url = "https://github.com/artsbymat/aios/releases/download/v0.1.0/com.aios.calculator-v0.1.0.aios-plugin"
+sha256 = "d79a115023080daee6ca4f2de1519ed66dc7b2c23834befa6ea8dc905be3f78e"
+icon_url = "https://raw.githubusercontent.com/artsbymat/aios/main/plugins/com.aios.calculator/icon.svg"

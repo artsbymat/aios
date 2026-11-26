@@ -1,26 +1,24 @@
+mod plugin_cli;
+
 use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use aios_core::{AiosConfig, AiosPaths, Database, LogFormat, LogOptions, ThemeMode, init_logging};
 use aios_daemon::{
     DaemonIpcCommand, DaemonIpcResponse, DmenuCaseMode, DmenuRequest, DmenuStreamMessage,
 };
-use aios_plugin_host::{
-    PluginHost, WasmExecutionLimits, discover_plugins, install_plugin_from_dir, uninstall_plugin,
-};
 use aios_scripts::{discover_script_commands, execute_script_command};
 use aios_ui::{
-    DmenuOutcome, palette_for, run_daemon_app, run_dev_plugin_app, run_dmenu_app_streaming,
-    run_preview_app,
+    DmenuOutcome, palette_for, run_daemon_app, run_dmenu_app_streaming, run_preview_app,
 };
 use aios_wayland::{IpcClient, detect_compositor, read_system_color_scheme};
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use plugin_cli::{PluginCommand, run_plugin_cli};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum CliTheme {
+pub(crate) enum CliTheme {
     System,
     Dark,
     Light,
@@ -161,26 +159,6 @@ enum Command {
 }
 
 #[derive(Debug, Subcommand)]
-enum PluginCommand {
-    /// List installed external WASM plugins.
-    List,
-    /// Validate and install a local WASM plugin bundle directory (`aios-plugin.toml` + `.wasm`).
-    Install { path: PathBuf },
-    /// Uninstall an external WASM plugin by ID and purge its local state.
-    Uninstall { plugin_id: String },
-    /// Run a live hot-reloading preview window bound to a local plugin directory.
-    Dev {
-        path: PathBuf,
-        /// Optional command ID inside `aios-plugin.toml` to launch immediately.
-        #[arg(long)]
-        command: Option<String>,
-        /// Optional theme override for the dev preview session.
-        #[arg(long, value_enum)]
-        theme: Option<CliTheme>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
 enum ScriptCliCommand {
     /// List discovered Script Commands in `$XDG_CONFIG_HOME/aios/scripts/`.
     List,
@@ -266,86 +244,6 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_plugin_cli(action: PluginCommand) -> Result<()> {
-    let paths = AiosPaths::discover()?;
-    paths.ensure_dirs()?;
-    let config = AiosConfig::load_or_default(&paths)?;
-
-    match action {
-        PluginCommand::List => {
-            let plugins = discover_plugins(&paths.plugins_dir());
-            println!("Installed WASM Plugins ({}):", plugins.len());
-            if plugins.is_empty() {
-                println!("  (none in {})", paths.plugins_dir().display());
-            } else {
-                for p in &plugins {
-                    println!(
-                        "  - {} v{} [{}] ({} command(s))",
-                        p.manifest.name,
-                        p.manifest.version,
-                        p.manifest.id,
-                        p.manifest.commands.len()
-                    );
-                }
-            }
-            Ok(())
-        }
-        PluginCommand::Install { path } => {
-            let installed = install_plugin_from_dir(&path, &paths.plugins_dir())?;
-            println!(
-                "Installed WASM plugin '{}' ({}) v{} -> {}",
-                installed.manifest.name,
-                installed.manifest.id,
-                installed.manifest.version,
-                installed.root_dir.display()
-            );
-            let caps = installed.manifest.capabilities.declared_keys();
-            if !caps.is_empty() {
-                println!(
-                    "Declared capabilities (denied until approved in Settings & Plugins): {}",
-                    caps.join(", ")
-                );
-            }
-            Ok(())
-        }
-        PluginCommand::Uninstall { plugin_id } => {
-            let db = Database::open(&paths.database_file())?;
-            let removed = uninstall_plugin(&plugin_id, &paths.plugins_dir(), Some(&db))?;
-            if removed {
-                println!("Uninstalled plugin '{plugin_id}' and purged local plugin state.");
-            } else {
-                println!("Plugin '{plugin_id}' was not installed.");
-            }
-            Ok(())
-        }
-        PluginCommand::Dev {
-            path,
-            command,
-            theme,
-        } => {
-            // Validate bundle upfront so CLI gives an immediate error on invalid paths.
-            let db = Arc::new(Mutex::new(Database::open(&paths.database_file())?));
-            let mut probe = PluginHost::new(
-                config.clone(),
-                paths.clone(),
-                db,
-                WasmExecutionLimits::default(),
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
-            let bundle = probe
-                .attach_dev_plugin(&path)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            tracing::info!(
-                plugin_id = %bundle.manifest.id,
-                dir = %path.display(),
-                "starting AIOS plugin dev session with hot-reload"
-            );
-            run_dev_plugin_app(config, paths, path, command, theme.map(ThemeMode::from));
-            Ok(())
-        }
-    }
-}
-
 fn run_script_cli(action: ScriptCliCommand) -> Result<()> {
     let paths = AiosPaths::discover()?;
     paths.ensure_dirs()?;
@@ -425,7 +323,10 @@ fn run_doctor() -> Result<()> {
         .iter()
         .filter(|a| a.icon_path.is_some())
         .count();
-    let wasm_plugins = discover_plugins(&paths.plugins_dir());
+    let wasm_plugins = aios_plugin_host::discover_layered_plugins(
+        &paths.bundled_plugins_dirs(),
+        &paths.plugins_dir(),
+    );
     let script_cmds = discover_script_commands(&paths.scripts_dir());
 
     tracing::info!(
@@ -853,7 +754,7 @@ mod tests {
             .parent()
             .and_then(Path::parent)
             .expect("repo root")
-            .join("examples/plugins/palette-grid-wasm/icon.svg");
+            .join("plugins/com.aios.calculator/icon.svg");
         let resolved = normalize_dmenu_icon_spec(&svg_path.to_string_lossy());
         assert!(resolved.as_deref().is_some_and(|p| p.ends_with("icon.svg")));
 

@@ -10,40 +10,58 @@
 //! - Sub-microsecond host fast-gate + optional `=` exclusive prefix + SQLite calculation history
 
 use std::collections::HashMap;
+#[cfg(feature = "host")]
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+#[cfg(feature = "host")]
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(feature = "host")]
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "host")]
 use aios_core::Database;
 use aios_core::view::FilterMode;
+#[cfg(feature = "host")]
 use aios_plugin_sdk::{
-    ActionItem, ActionPanel, ActionPanelBuilder, CommandMode, CommandSpec, DefaultViewKind,
-    EmptyView, ListItemBuilder, ListViewBuilder, MetadataEntry, PluginCapabilities, PluginEvent,
-    PluginManifest, PluginResponse, PreferenceKind, PreferenceSpec, SemanticTone, ViewNode,
+    CommandMode, CommandSpec, DefaultViewKind, PluginCapabilities, PluginEvent, PluginManifest,
+    PluginResponse, PreferenceKind, PreferenceSpec,
+};
+use aios_plugin_sdk::{
+    ActionItem, ActionPanel, ActionPanelBuilder, EmptyView, InlinePluginResult, ListItemBuilder,
+    ListViewBuilder, MetadataEntry, SemanticTone, ViewNode,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{FirstPartyPlugin, InlinePluginResult, PluginEnv, now_epoch_secs};
+#[cfg(feature = "host")]
+use crate::{FirstPartyPlugin, PluginEnv};
+use crate::now_epoch_secs;
 
 pub const CALCULATOR_PLUGIN_ID: &str = "com.aios.calculator";
 pub const CALCULATOR_COMMAND_ID: &str = "calculator";
 pub const CALCULATOR_ICON_ASSET: &str = "asset://icons/plugins/calculator.svg";
 pub const CALCULATOR_REFRESH_RATES_ACTION: &str = "plugin.calc.refresh-rates";
-const HISTORY_STORAGE_KEY: &str = "history_v1";
+pub const HISTORY_STORAGE_KEY: &str = "history_v1";
 pub const CUSTOM_RATES_STORAGE_KEY: &str = "currency_rates_v1";
-const MAX_HISTORY_ENTRIES: usize = 50;
+pub const MAX_HISTORY_ENTRIES: usize = 50;
 const DEFAULT_CURRENCY_REFRESH_SECS: u64 = 24 * 3600;
 const MIN_CURRENCY_REFRESH_SECS: u64 = 300;
+#[cfg(feature = "host")]
 const FAILURE_RETRY_COOLDOWN_SECS: i64 = 600;
+#[cfg(feature = "host")]
 const HTTP_TIMEOUT_SECS: u64 = 5;
 
+#[cfg(feature = "host")]
 const FAWAZ_JSDELIVR_URL: &str =
     "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json";
+#[cfg(feature = "host")]
 const FAWAZ_PAGES_FALLBACK_URL: &str =
     "https://latest.currency-api.pages.dev/v1/currencies/usd.json";
+#[cfg(feature = "host")]
 const OPEN_ER_API_URL: &str = "https://open.er-api.com/v6/latest/USD";
 
+#[cfg(feature = "host")]
 static FX_FETCH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "host")]
 static FX_LAST_ATTEMPT_SECS: AtomicI64 = AtomicI64::new(0);
 
 /// Persisted offline-first exchange rate snapshot stored in SQLite (`currency_rates_v1`).
@@ -84,35 +102,49 @@ impl Default for CalcOptions {
 }
 
 impl CalcOptions {
-    fn from_env(env: &PluginEnv<'_>) -> Self {
+    /// Builds [`CalcOptions`] from raw preference + cached-rates lookup closures (works in both
+    /// native host and `wasm32-wasip2` guest plugins).
+    #[must_use]
+    pub fn from_lookup<P, S>(mut get_pref: P, mut get_storage: S) -> Self
+    where
+        P: FnMut(&str) -> Option<String>,
+        S: FnMut(&str) -> Option<Vec<u8>>,
+    {
         let mut opts = Self::default();
-        if let Some(raw) = env.preference("base_font_px")
+        if let Some(raw) = get_pref("base_font_px")
             && let Ok(v) = raw.trim().parse::<f64>()
             && (4.0..=128.0).contains(&v)
         {
             opts.base_font_px = v;
         }
-        if let Some(raw) = env.preference("decimal_places")
+        if let Some(raw) = get_pref("decimal_places")
             && let Ok(v) = raw.trim().parse::<usize>()
         {
             opts.decimal_places = v.min(12);
         }
-        if let Some(cached) = load_cached_currency_rates(env) {
+        if let Some(raw_bytes) = get_storage(CUSTOM_RATES_STORAGE_KEY)
+            && let Some(cached) = decode_cached_currency_rates(&raw_bytes)
+        {
             opts.custom_rates_usd = cached.rates;
             opts.rates_updated_at = Some(cached.updated_at);
             opts.rates_date_label = Some(cached.date_label);
             opts.rates_source = Some(cached.source);
         }
-        if let Some(raw) = env.preference("default_currency") {
+        if let Some(raw) = get_pref("default_currency") {
             let trimmed = raw.trim().to_ascii_uppercase();
             if lookup_currency_rate(&trimmed, &opts.custom_rates_usd).is_some() {
                 opts.default_currency = trimmed;
             }
         }
-        if let Some(raw) = env.preference("currency_refresh_interval") {
+        if let Some(raw) = get_pref("currency_refresh_interval") {
             opts.refresh_interval_secs = parse_refresh_interval_secs(&raw);
         }
         opts
+    }
+
+    #[cfg(feature = "host")]
+    fn from_env(env: &PluginEnv<'_>) -> Self {
+        Self::from_lookup(|k| env.preference(k), |k| env.storage_get(k))
     }
 }
 
@@ -162,16 +194,15 @@ pub fn needs_currency_refresh(
     now_secs.saturating_sub(updated_at) >= i64::try_from(ttl).unwrap_or(i64::MAX)
 }
 
-/// Loads cached live exchange rates from SQLite (compatible with legacy raw `HashMap` format).
+/// Decodes cached live exchange rates from raw JSON bytes (supports legacy raw `HashMap`).
 #[must_use]
-pub fn load_cached_currency_rates(env: &PluginEnv<'_>) -> Option<CachedCurrencyRates> {
-    let raw_bytes = env.storage_get(CUSTOM_RATES_STORAGE_KEY)?;
-    if let Ok(cached) = serde_json::from_slice::<CachedCurrencyRates>(&raw_bytes)
+pub fn decode_cached_currency_rates(raw_bytes: &[u8]) -> Option<CachedCurrencyRates> {
+    if let Ok(cached) = serde_json::from_slice::<CachedCurrencyRates>(raw_bytes)
         && !cached.rates.is_empty()
     {
         return Some(cached);
     }
-    if let Ok(rates) = serde_json::from_slice::<HashMap<String, f64>>(&raw_bytes)
+    if let Ok(rates) = serde_json::from_slice::<HashMap<String, f64>>(raw_bytes)
         && !rates.is_empty()
     {
         return Some(CachedCurrencyRates {
@@ -184,7 +215,16 @@ pub fn load_cached_currency_rates(env: &PluginEnv<'_>) -> Option<CachedCurrencyR
     None
 }
 
+/// Loads cached live exchange rates from SQLite (compatible with legacy raw `HashMap` format).
+#[cfg(feature = "host")]
+#[must_use]
+pub fn load_cached_currency_rates(env: &PluginEnv<'_>) -> Option<CachedCurrencyRates> {
+    let raw_bytes = env.storage_get(CUSTOM_RATES_STORAGE_KEY)?;
+    decode_cached_currency_rates(&raw_bytes)
+}
+
 /// Persists a `CachedCurrencyRates` snapshot to SQLite plugin storage.
+#[cfg(feature = "host")]
 pub fn save_cached_currency_rates(
     db: &Arc<Mutex<Database>>,
     cached: &CachedCurrencyRates,
@@ -280,6 +320,7 @@ pub fn parse_open_er_api_json(body: &str) -> Result<(String, HashMap<String, f64
 
 /// Fetches the latest USD-based exchange rates using primary CDN (`fawazahmed0/currency-api`,
 /// covering 26 fiat + crypto currencies) with automatic fallback to `pages.dev` and `open.er-api.com`.
+#[cfg(feature = "host")]
 pub fn fetch_latest_currency_rates() -> Result<CachedCurrencyRates, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
@@ -335,6 +376,7 @@ pub fn fetch_latest_currency_rates() -> Result<CachedCurrencyRates, String> {
 
 /// Immediately fetches and persists fresh exchange rates (used by manual "Refresh Exchange Rates Now"
 /// off the UI thread). Preserves any existing crypto rates when falling back to fiat-only `open.er-api`.
+#[cfg(feature = "host")]
 pub fn refresh_currency_rates_now(db: &Arc<Mutex<Database>>) -> Result<CachedCurrencyRates, String> {
     let mut fetched = fetch_latest_currency_rates()?;
     // If fallback provider lacked crypto (BTC/ETH), keep previously cached values for missing codes.
@@ -350,7 +392,9 @@ pub fn refresh_currency_rates_now(db: &Arc<Mutex<Database>>) -> Result<CachedCur
     Ok(fetched)
 }
 
+#[cfg(feature = "host")]
 struct InFlightGuard;
+#[cfg(feature = "host")]
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
         FX_FETCH_IN_FLIGHT.store(false, Ordering::Release);
@@ -359,6 +403,7 @@ impl Drop for InFlightGuard {
 
 /// Non-blocking Stale-While-Revalidate background refresh: checks SQLite cache TTL and failure
 /// cooldown, then spawns at most one short-lived thread to refresh cached rates without blocking UI.
+#[cfg(feature = "host")]
 pub fn maybe_schedule_stale_currency_refresh(db: &Arc<Mutex<Database>>) {
     if cfg!(test) {
         return;
@@ -459,6 +504,19 @@ impl CalcCategory {
         }
     }
 
+    /// Relative bundle icon path used by external WASM `com.aios.calculator` bundles.
+    #[must_use]
+    pub const fn relative_icon_path(self) -> &'static str {
+        match self {
+            Self::Arithmetic => "icons/calc-arithmetic.svg",
+            Self::Base => "icons/calc-base.svg",
+            Self::Unit => "icons/calc-unit.svg",
+            Self::Currency => "icons/calc-currency.svg",
+            Self::Date => "icons/calc-date.svg",
+            Self::Timezone => "icons/calc-timezone.svg",
+        }
+    }
+
     #[must_use]
     pub const fn badge_fallback(self) -> &'static str {
         match self {
@@ -483,20 +541,313 @@ pub struct CalcEvaluation {
     pub notes: Vec<(String, String)>,
 }
 
+/// One persisted calculation history entry stored under `history_v1`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct HistoryRecord {
-    id: String,
-    expression: String,
-    result: String,
-    category: CalcCategory,
-    subtitle: String,
-    timestamp: i64,
+pub struct HistoryRecord {
+    pub id: String,
+    pub expression: String,
+    pub result: String,
+    pub category: CalcCategory,
+    pub subtitle: String,
+    pub timestamp: i64,
 }
 
-/// First-party Inline Calculator & Converter plugin.
+/// Inserts `eval` at the top of `history` (deduplicating identical expression+result, capped at 50).
+pub fn push_history_record(history: &mut Vec<HistoryRecord>, eval: &CalcEvaluation) {
+    history.retain(|h| !(h.expression == eval.expression && h.result == eval.copy_value));
+    let ts = now_epoch_secs();
+    history.insert(
+        0,
+        HistoryRecord {
+            id: format!("h-{ts}-{}", history.len()),
+            expression: eval.expression.clone(),
+            result: eval.copy_value.clone(),
+            category: eval.category,
+            subtitle: eval.detail_subtitle.clone(),
+            timestamp: ts,
+        },
+    );
+    history.truncate(MAX_HISTORY_ENTRIES);
+}
+
+/// Builds the full `Calculator & Converter` interactive `List + Split Detail` view.
+/// When `use_relative_icons` is `true` (external WASM bundle), emits `"icons/calc-*.svg"` so
+/// `PluginHost` resolves icons relative to the bundle directory.
+#[must_use]
+pub fn build_calculator_list_view(
+    query: &str,
+    opts: &CalcOptions,
+    history: &[HistoryRecord],
+    use_relative_icons: bool,
+) -> ViewNode {
+    let trimmed = query.trim();
+    let cleaned = trimmed.strip_prefix('=').map(str::trim).unwrap_or(trimmed);
+    let icon_for = |cat: CalcCategory| -> &'static str {
+        if use_relative_icons {
+            cat.relative_icon_path()
+        } else {
+            cat.history_icon_asset()
+        }
+    };
+
+    let mut builder = ListViewBuilder::new("Calculator & Converter")
+        .placeholder("Type expression (e.g. 24 * 12, 0xff to bin, 100 cm to in, 50 usd to idr, today + 14d)...")
+        .filtering(FilterMode::Plugin)
+        .showing_detail(true);
+
+    if !cleaned.is_empty() {
+        match evaluate_expression(cleaned, opts) {
+            Ok(eval) => {
+                let mut md = format!(
+                    "# {}\n\nExpression:\n\n```text\n{}\n```\n",
+                    eval.formatted, eval.expression
+                );
+                if !eval.notes.is_empty() {
+                    md.push_str("\n## Breakdown\n");
+                    for (k, v) in &eval.notes {
+                        md.push_str(&format!("\n- **{k}**: `{v}`"));
+                    }
+                }
+
+                let mut metadata = vec![
+                    MetadataEntry::TagList {
+                        title: "Type".to_string(),
+                        tags: vec![(eval.category.label().to_string(), SemanticTone::Accent)],
+                    },
+                    MetadataEntry::Label {
+                        title: "Copy Value".to_string(),
+                        text: eval.copy_value.clone(),
+                    },
+                ];
+                for (k, v) in eval.notes.iter().take(4) {
+                    metadata.push(MetadataEntry::Label {
+                        title: k.clone(),
+                        text: v.clone(),
+                    });
+                }
+
+                let encoded = encode_calc_payload(&eval.expression, &eval.copy_value);
+                let live_item = ListItemBuilder::new("calc-live-result", eval.formatted.clone())
+                    .subtitle(format!("{}  ·  {}", eval.expression, eval.detail_subtitle))
+                    .icon(eval.category.badge_fallback())
+                    .icon_path(icon_for(eval.category))
+                    .accessory_tag(eval.category.label(), SemanticTone::Accent)
+                    .detail(md, metadata)
+                    .actions(
+                        ActionPanelBuilder::new()
+                            .section(
+                                Some("Result"),
+                                vec![
+                                    ActionItem::new(
+                                        format!("calc.copy-save:{encoded}"),
+                                        format!("Copy {}", eval.copy_value),
+                                    )
+                                    .shortcut("Enter"),
+                                    ActionItem::new(
+                                        format!("calc.copy-full:{encoded}"),
+                                        "Copy Expression = Result",
+                                    )
+                                    .shortcut("Ctrl+Enter"),
+                                    ActionItem::new(
+                                        format!("calc.save:{encoded}"),
+                                        "Save to History",
+                                    ),
+                                ],
+                            )
+                            .section(
+                                Some("Calculator"),
+                                vec![
+                                    ActionItem::new(
+                                        CALCULATOR_REFRESH_RATES_ACTION,
+                                        "Refresh Exchange Rates Now",
+                                    ),
+                                    ActionItem::new("calc.clear-history", "Clear History"),
+                                    ActionItem::new("nav.pop", "Back to Root").shortcut("Esc"),
+                                ],
+                            )
+                            .build(),
+                    )
+                    .build();
+
+                builder = builder.section(
+                    Some("Live Result"),
+                    Some(eval.category.label()),
+                    vec![live_item],
+                );
+            }
+            Err(err_msg) => {
+                let hint_item = ListItemBuilder::new("calc-parse-error", err_msg.clone())
+                    .subtitle(format!("Input: {cleaned}"))
+                    .icon("!")
+                    .accessory_tag("Hint", SemanticTone::Warning)
+                    .detail(
+                        format!(
+                            "# Incomplete or invalid expression\n\n`{cleaned}`\n\n> {err_msg}\n\n## Supported Examples\n\n- Arithmetic: `24 * 12`, `(45 + 5) / 2`, `20% of 450`, `sqrt(144)`\n- Bases: `0xff to dec`, `255 to bin`, `0b1010 + 0x10`\n- Units: `100 cm to in`, `72 f to c`, `1500 ml to l`, `1.5 gib to mb`, `24 px to rem`\n- Currency (cached): `100 usd to idr`, `$49.99 to idr`\n- Date & TZ: `today + 14d`, `2026-12-31 - today`, `now in tokyo`, `14:30 wib to utc`"
+                        ),
+                        vec![MetadataEntry::TagList {
+                            title: "Status".to_string(),
+                            tags: vec![("Parse Hint".to_string(), SemanticTone::Warning)],
+                        }],
+                    )
+                    .actions(ActionPanel::from_actions(vec![
+                        ActionItem::new("search.clear", "Clear Input").shortcut("Enter"),
+                    ]))
+                    .build();
+                builder = builder.section(Some("Expression"), None, vec![hint_item]);
+            }
+        }
+    }
+
+    if !history.is_empty() {
+        let hist_items = history
+            .iter()
+            .map(|rec| {
+                let encoded = encode_calc_payload(&rec.expression, &rec.result);
+                ListItemBuilder::new(rec.id.clone(), rec.result.clone())
+                    .subtitle(rec.expression.clone())
+                    .icon(rec.category.badge_fallback())
+                    .icon_path(icon_for(rec.category))
+                    .accessory_tag(rec.category.label(), SemanticTone::Neutral)
+                    .detail(
+                        format!(
+                            "# {}\n\n```text\n{} = {}\n```\n\n{}",
+                            rec.result, rec.expression, rec.result, rec.subtitle
+                        ),
+                        vec![
+                            MetadataEntry::TagList {
+                                title: "Type".to_string(),
+                                tags: vec![(
+                                    rec.category.label().to_string(),
+                                    SemanticTone::Neutral,
+                                )],
+                            },
+                            MetadataEntry::Label {
+                                title: "Expression".to_string(),
+                                text: rec.expression.clone(),
+                            },
+                        ],
+                    )
+                    .actions(
+                        ActionPanelBuilder::new()
+                            .section(
+                                Some("History Entry"),
+                                vec![
+                                    ActionItem::new(
+                                        format!("calc.copy-raw:{}", rec.result),
+                                        format!("Copy {}", rec.result),
+                                    )
+                                    .shortcut("Enter"),
+                                    ActionItem::new(
+                                        format!("calc.copy-full:{encoded}"),
+                                        "Copy Expression = Result",
+                                    )
+                                    .shortcut("Ctrl+Enter"),
+                                    ActionItem::new(
+                                        format!("calc.delete:{}", rec.id),
+                                        "Remove Entry",
+                                    ),
+                                    ActionItem::new(
+                                        CALCULATOR_REFRESH_RATES_ACTION,
+                                        "Refresh Exchange Rates Now",
+                                    ),
+                                    ActionItem::new("calc.clear-history", "Clear All History"),
+                                ],
+                            )
+                            .build(),
+                    )
+                    .build()
+            })
+            .collect();
+        let count_label = format!("{} saved", history.len());
+        builder = builder.section(Some("Recent Calculations"), Some(&count_label), hist_items);
+    }
+
+    builder
+        .empty_view(EmptyView {
+            title: "Calculator & Converter Ready".to_string(),
+            description: Some(
+                "Try: 24 * 12, 20% of 450, 0xff to bin, 100 cm to in, 1500 ml to l, 24 px to rem, 50 usd to idr, today + 14d, or now in tokyo."
+                    .to_string(),
+            ),
+            icon: Some("=".to_string()),
+            actions: ActionPanel::from_actions(vec![
+                ActionItem::new(
+                    CALCULATOR_REFRESH_RATES_ACTION,
+                    "Refresh Exchange Rates Now",
+                ),
+                ActionItem::new("nav.pop", "Back to Root").shortcut("Esc"),
+            ]),
+        })
+        .build()
+}
+
+/// Evaluates an inline Root Search query into an [`InlinePluginResult`] (shared by both
+/// external WASM and fallback native providers).
+#[must_use]
+pub fn evaluate_inline_with_opts(
+    query: &str,
+    opts: &CalcOptions,
+    icon_path: &str,
+) -> Option<(InlinePluginResult, CalcCategory)> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (exclusive, expr) = if let Some(rest) = trimmed.strip_prefix('=') {
+        (true, rest.trim())
+    } else {
+        if !might_be_calculator_query(trimmed) {
+            return None;
+        }
+        (false, trimmed)
+    };
+    if expr.is_empty() {
+        return None;
+    }
+
+    let eval = evaluate_expression(expr, opts).ok()?;
+
+    // Avoid noisy inline cards for trivial bare numbers like "42" unless explicit `=` prefix was used.
+    if !exclusive
+        && eval.category == CalcCategory::Arithmetic
+        && !has_math_operator_or_func(expr)
+    {
+        return None;
+    }
+
+    let category = eval.category;
+    let encoded = encode_calc_payload(&eval.expression, &eval.copy_value);
+    Some((
+        InlinePluginResult {
+            id: format!("inline:calc:{}", eval.copy_value),
+            plugin_id: CALCULATOR_PLUGIN_ID.to_string(),
+            command_id: CALCULATOR_COMMAND_ID.to_string(),
+            section_title: "Calculator".to_string(),
+            section_subtitle: Some(eval.category.label().to_string()),
+            title: eval.formatted,
+            subtitle: format!("{}  ·  {}", eval.expression, eval.detail_subtitle),
+            badge: "=".to_string(),
+            icon_path: Some(icon_path.to_owned()),
+            tag_label: eval.category.label().to_string(),
+            copy_value: eval.copy_value,
+            copy_action_id: format!("plugin.inline:{CALCULATOR_PLUGIN_ID}:copy:{encoded}"),
+            open_action_id: format!(
+                "plugin.run:{CALCULATOR_PLUGIN_ID}:{CALCULATOR_COMMAND_ID}"
+            ),
+            open_action_title: "Open Calculator & History".to_string(),
+            exclusive,
+        },
+        category,
+    ))
+}
+
+/// First-party Inline Calculator & Converter fallback plugin (shadowed automatically when
+/// external WASM `com.aios.calculator` bundle is installed/bundled).
+#[cfg(feature = "host")]
 #[derive(Debug, Default)]
 pub struct CalculatorPlugin;
 
+#[cfg(feature = "host")]
 impl CalculatorPlugin {
     #[must_use]
     pub const fn new() -> Self {
@@ -517,224 +868,21 @@ impl CalculatorPlugin {
 
     fn record_history(env: &PluginEnv<'_>, eval: &CalcEvaluation) {
         let mut history = Self::load_history(env);
-        history.retain(|h| !(h.expression == eval.expression && h.result == eval.copy_value));
-        let ts = now_epoch_secs();
-        history.insert(
-            0,
-            HistoryRecord {
-                id: format!("h-{ts}-{}", history.len()),
-                expression: eval.expression.clone(),
-                result: eval.copy_value.clone(),
-                category: eval.category,
-                subtitle: eval.detail_subtitle.clone(),
-                timestamp: ts,
-            },
-        );
-        history.truncate(MAX_HISTORY_ENTRIES);
+        push_history_record(&mut history, eval);
         Self::save_history(env, &history);
     }
 
     fn build_view(query: &str, env: &PluginEnv<'_>) -> ViewNode {
         let opts = CalcOptions::from_env(env);
         let history = Self::load_history(env);
-        let trimmed = query.trim();
-        let cleaned = trimmed.strip_prefix('=').map(str::trim).unwrap_or(trimmed);
-        if cleaned.is_empty() {
+        if query.trim().trim_start_matches('=').trim().is_empty() {
             maybe_schedule_stale_currency_refresh(&env.db_arc());
         }
-
-        let mut builder = ListViewBuilder::new("Calculator & Converter")
-            .placeholder("Type expression (e.g. 24 * 12, 0xff to bin, 100 cm to in, 50 usd to idr, today + 14d)...")
-            .filtering(FilterMode::Plugin)
-            .showing_detail(true);
-
-        if !cleaned.is_empty() {
-            match evaluate_expression(cleaned, &opts) {
-                Ok(eval) => {
-                    let mut md = format!(
-                        "# {}\n\nExpression:\n\n```text\n{}\n```\n",
-                        eval.formatted, eval.expression
-                    );
-                    if !eval.notes.is_empty() {
-                        md.push_str("\n## Breakdown\n");
-                        for (k, v) in &eval.notes {
-                            md.push_str(&format!("\n- **{k}**: `{v}`"));
-                        }
-                    }
-
-                    let mut metadata = vec![
-                        MetadataEntry::TagList {
-                            title: "Type".to_string(),
-                            tags: vec![(eval.category.label().to_string(), SemanticTone::Accent)],
-                        },
-                        MetadataEntry::Label {
-                            title: "Copy Value".to_string(),
-                            text: eval.copy_value.clone(),
-                        },
-                    ];
-                    for (k, v) in eval.notes.iter().take(4) {
-                        metadata.push(MetadataEntry::Label {
-                            title: k.clone(),
-                            text: v.clone(),
-                        });
-                    }
-
-                    let encoded = encode_calc_payload(&eval.expression, &eval.copy_value);
-                    let live_item = ListItemBuilder::new("calc-live-result", eval.formatted.clone())
-                        .subtitle(format!("{}  ·  {}", eval.expression, eval.detail_subtitle))
-                        .icon(eval.category.badge_fallback())
-                        .icon_path(eval.category.history_icon_asset())
-                        .accessory_tag(eval.category.label(), SemanticTone::Accent)
-                        .detail(md, metadata)
-                        .actions(
-                            ActionPanelBuilder::new()
-                                .section(
-                                    Some("Result"),
-                                    vec![
-                                        ActionItem::new(
-                                            format!("calc.copy-save:{encoded}"),
-                                            format!("Copy {}", eval.copy_value),
-                                        )
-                                        .shortcut("Enter"),
-                                        ActionItem::new(
-                                            format!("calc.copy-full:{encoded}"),
-                                            "Copy Expression = Result",
-                                        )
-                                        .shortcut("Ctrl+Enter"),
-                                        ActionItem::new(
-                                            format!("calc.save:{encoded}"),
-                                            "Save to History",
-                                        ),
-                                    ],
-                                )
-                                .section(
-                                    Some("Calculator"),
-                                    vec![
-                                        ActionItem::new(
-                                            CALCULATOR_REFRESH_RATES_ACTION,
-                                            "Refresh Exchange Rates Now",
-                                        ),
-                                        ActionItem::new("calc.clear-history", "Clear History"),
-                                        ActionItem::new("nav.pop", "Back to Root").shortcut("Esc"),
-                                    ],
-                                )
-                                .build(),
-                        )
-                        .build();
-
-                    builder = builder.section(
-                        Some("Live Result"),
-                        Some(eval.category.label()),
-                        vec![live_item],
-                    );
-                }
-                Err(err_msg) => {
-                    let hint_item = ListItemBuilder::new("calc-parse-error", err_msg.clone())
-                        .subtitle(format!("Input: {cleaned}"))
-                        .icon("!")
-                        .accessory_tag("Hint", SemanticTone::Warning)
-                        .detail(
-                            format!(
-                                "# Incomplete or invalid expression\n\n`{cleaned}`\n\n> {err_msg}\n\n## Supported Examples\n\n- Arithmetic: `24 * 12`, `(45 + 5) / 2`, `20% of 450`, `sqrt(144)`\n- Bases: `0xff to dec`, `255 to bin`, `0b1010 + 0x10`\n- Units: `100 cm to in`, `72 f to c`, `1.5 gib to mb`, `24 px to rem`\n- Currency (offline): `100 usd to idr`, `$49.99 to idr`\n- Date & TZ: `today + 14d`, `2026-12-31 - today`, `now in tokyo`, `14:30 wib to utc`"
-                            ),
-                            vec![MetadataEntry::TagList {
-                                title: "Status".to_string(),
-                                tags: vec![("Parse Hint".to_string(), SemanticTone::Warning)],
-                            }],
-                        )
-                        .actions(ActionPanel::from_actions(vec![
-                            ActionItem::new("search.clear", "Clear Input").shortcut("Enter"),
-                        ]))
-                        .build();
-                    builder = builder.section(Some("Expression"), None, vec![hint_item]);
-                }
-            }
-        }
-
-        if !history.is_empty() {
-            let hist_items = history
-                .iter()
-                .map(|rec| {
-                    let encoded = encode_calc_payload(&rec.expression, &rec.result);
-                    ListItemBuilder::new(rec.id.clone(), rec.result.clone())
-                        .subtitle(rec.expression.clone())
-                        .icon(rec.category.badge_fallback())
-                        .icon_path(rec.category.history_icon_asset())
-                        .accessory_tag(rec.category.label(), SemanticTone::Neutral)
-                        .detail(
-                            format!(
-                                "# {}\n\n```text\n{} = {}\n```\n\n{}",
-                                rec.result, rec.expression, rec.result, rec.subtitle
-                            ),
-                            vec![
-                                MetadataEntry::TagList {
-                                    title: "Type".to_string(),
-                                    tags: vec![(
-                                        rec.category.label().to_string(),
-                                        SemanticTone::Neutral,
-                                    )],
-                                },
-                                MetadataEntry::Label {
-                                    title: "Expression".to_string(),
-                                    text: rec.expression.clone(),
-                                },
-                            ],
-                        )
-                        .actions(
-                            ActionPanelBuilder::new()
-                                .section(
-                                    Some("History Entry"),
-                                    vec![
-                                        ActionItem::new(
-                                            format!("calc.copy-raw:{}", rec.result),
-                                            format!("Copy {}", rec.result),
-                                        )
-                                        .shortcut("Enter"),
-                                        ActionItem::new(
-                                            format!("calc.copy-full:{encoded}"),
-                                            "Copy Expression = Result",
-                                        )
-                                        .shortcut("Ctrl+Enter"),
-                                        ActionItem::new(
-                                            format!("calc.delete:{}", rec.id),
-                                            "Remove Entry",
-                                        ),
-                                        ActionItem::new(
-                                            CALCULATOR_REFRESH_RATES_ACTION,
-                                            "Refresh Exchange Rates Now",
-                                        ),
-                                        ActionItem::new("calc.clear-history", "Clear All History"),
-                                    ],
-                                )
-                                .build(),
-                        )
-                        .build()
-                })
-                .collect();
-            let count_label = format!("{} saved", history.len());
-            builder = builder.section(Some("Recent Calculations"), Some(&count_label), hist_items);
-        }
-
-        builder
-            .empty_view(EmptyView {
-                title: "Calculator & Converter Ready".to_string(),
-                description: Some(
-                    "Try: 24 * 12, 20% of 450, 0xff to bin, 100 cm to in, 24 px to rem, 50 usd to idr, today + 14d, or now in tokyo."
-                        .to_string(),
-                ),
-                icon: Some("=".to_string()),
-                actions: ActionPanel::from_actions(vec![
-                    ActionItem::new(
-                        CALCULATOR_REFRESH_RATES_ACTION,
-                        "Refresh Exchange Rates Now",
-                    ),
-                    ActionItem::new("nav.pop", "Back to Root").shortcut("Esc"),
-                ]),
-            })
-            .build()
+        build_calculator_list_view(query, &opts, &history, false)
     }
 }
 
+#[cfg(feature = "host")]
 impl FirstPartyPlugin for CalculatorPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
@@ -750,6 +898,7 @@ impl FirstPartyPlugin for CalculatorPlugin {
                 clipboard_write: true,
                 ..PluginCapabilities::default()
             },
+            inline_trigger: aios_plugin_sdk::InlineTriggerSpec::default(),
             preferences: vec![
                 PreferenceSpec {
                     name: "base_font_px".to_string(),
@@ -973,11 +1122,13 @@ impl FirstPartyPlugin for CalculatorPlugin {
     }
 }
 
-fn encode_calc_payload(expr: &str, result: &str) -> String {
+#[must_use]
+pub fn encode_calc_payload(expr: &str, result: &str) -> String {
     serde_json::to_string(&(expr, result)).unwrap_or_default()
 }
 
-fn decode_calc_payload(raw: &str) -> Option<(String, String)> {
+#[must_use]
+pub fn decode_calc_payload(raw: &str) -> Option<(String, String)> {
     serde_json::from_str::<(String, String)>(raw).ok()
 }
 

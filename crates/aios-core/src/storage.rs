@@ -5,7 +5,18 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 1;
+pub const LATEST_SCHEMA_VERSION: u32 = 2;
+
+/// Persisted enable/disable & provenance metadata for an installed or bundled plugin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginStateRecord {
+    pub plugin_id: String,
+    pub enabled: bool,
+    pub origin: String,
+    pub installed_version: Option<String>,
+    pub sha256: Option<String>,
+    pub updated_at: i64,
+}
 
 /// Aggregated frecency row read from SQLite `frecency` table.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -102,7 +113,22 @@ const MIGRATIONS: &[Migration] = &[Migration {
             PRIMARY KEY (plugin_id, capability)
         );
     "#,
-}];
+    },
+    Migration {
+        version: 2,
+        name: "plugin_state_and_registry",
+        sql: r#"
+        CREATE TABLE IF NOT EXISTS plugin_state (
+            plugin_id TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            origin TEXT NOT NULL DEFAULT 'user',
+            installed_version TEXT,
+            sha256 TEXT,
+            updated_at INTEGER NOT NULL
+        );
+    "#,
+    },
+];
 
 /// Local SQLite database handle configured with WAL mode and foreign keys.
 #[derive(Debug)]
@@ -430,6 +456,10 @@ impl Database {
             "DELETE FROM plugin_permissions WHERE plugin_id = ?1",
             params![plugin_id],
         )?;
+        self.conn.execute(
+            "DELETE FROM plugin_state WHERE plugin_id = ?1",
+            params![plugin_id],
+        )?;
         let pref_ns = format!("__pref__:{plugin_id}");
         let cache_ns = format!("__cache__:{plugin_id}");
         let secret_ns = format!("__secret__:{plugin_id}");
@@ -438,6 +468,94 @@ impl Database {
             params![plugin_id, pref_ns, cache_ns, secret_ns],
         )?;
         Ok(())
+    }
+
+    /// Returns whether `plugin_id` is enabled (defaults to `true` when no override row exists).
+    pub fn is_plugin_enabled(&self, plugin_id: &str) -> Result<bool> {
+        let val: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT enabled FROM plugin_state WHERE plugin_id = ?1",
+                params![plugin_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(val != Some(0))
+    }
+
+    /// Enables or disables `plugin_id` without deleting bundled or user files.
+    pub fn set_plugin_enabled(
+        &self,
+        plugin_id: &str,
+        enabled: bool,
+        now_epoch: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO plugin_state (plugin_id, enabled, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(plugin_id) DO UPDATE SET
+               enabled = excluded.enabled,
+               updated_at = excluded.updated_at",
+            params![plugin_id, i64::from(enabled), now_epoch],
+        )?;
+        Ok(())
+    }
+
+    /// Returns the set of all explicitly disabled plugin IDs.
+    pub fn list_disabled_plugins(&self) -> Result<HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT plugin_id FROM plugin_state WHERE enabled = 0")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut out = HashSet::new();
+        for row in rows {
+            out.insert(row?);
+        }
+        Ok(out)
+    }
+
+    /// Records install provenance & checksum metadata for a plugin while preserving `enabled`.
+    pub fn record_plugin_install_meta(
+        &self,
+        plugin_id: &str,
+        origin: &str,
+        version: &str,
+        sha256: Option<&str>,
+        now_epoch: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO plugin_state (plugin_id, enabled, origin, installed_version, sha256, updated_at)
+             VALUES (?1, 1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(plugin_id) DO UPDATE SET
+               origin = excluded.origin,
+               installed_version = excluded.installed_version,
+               sha256 = excluded.sha256,
+               updated_at = excluded.updated_at",
+            params![plugin_id, origin, version, sha256, now_epoch],
+        )?;
+        Ok(())
+    }
+
+    /// Reads the persisted [`PluginStateRecord`] for `plugin_id`, if present.
+    pub fn get_plugin_state(&self, plugin_id: &str) -> Result<Option<PluginStateRecord>> {
+        self.conn
+            .query_row(
+                "SELECT plugin_id, enabled, origin, installed_version, sha256, updated_at
+                 FROM plugin_state WHERE plugin_id = ?1",
+                params![plugin_id],
+                |row| {
+                    Ok(PluginStateRecord {
+                        plugin_id: row.get(0)?,
+                        enabled: row.get::<_, i64>(1)? != 0,
+                        origin: row.get(2)?,
+                        installed_version: row.get(3)?,
+                        sha256: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// Reads a persisted plugin preference value.

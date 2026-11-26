@@ -13,13 +13,12 @@ members = [
     "crates/aios-daemon",
     "crates/aios-app",
 ]
+exclude = ["plugins/*"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/rahmat/aios"
-rust-version = "1.85"
 
 [workspace.dependencies]
 aios-fuzzy = { path = "crates/aios-fuzzy" }
@@ -36,21 +35,24 @@ aios-daemon = { path = "crates/aios-daemon" }
 anyhow = "1.0"
 async-channel = "2.5"
 clap = { version = "4.6", features = ["derive"] }
+flate2 = "1.1"
 gpui = { package = "gpui-ce", version = "0.3.0", default-features = false, features = ["wayland", "font-kit", "image-default-formats"] }
 gpui_platform = { package = "gpui_ce_platform", version = "0.3.0", features = ["wayland"] }
 rayon = "1.11"
 rusqlite = "0.38"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 tempfile = "3.27"
 thiserror = "2.0"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 ureq = "2.12"
-wasmtime = { version = "29.0", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
-wasmtime-wasi = "29.0"
+wasmtime = { version = "51.0", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
+wasmtime-wasi = "51.0"
 wat = "1.225"
+wit-bindgen = "0.57"
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 
 [workspace.lints.rust]

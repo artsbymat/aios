@@ -352,7 +352,7 @@ fn grid_arrow_navigation_moves_across_columns_and_rows() {
 }
 
 #[test]
-fn palette_plugin_enter_exit_and_form_save_preserve_all_keybinds() {
+fn plugin_enter_exit_and_form_keybinds_remain_intact() {
     use std::collections::BTreeMap;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
@@ -377,58 +377,59 @@ fn palette_plugin_enter_exit_and_form_save_preserve_all_keybinds() {
     )
     .expect("plugin host");
 
-    let palette_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let calc_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .expect("repo root")
-        .join("examples/plugins/palette-grid-wasm");
-    host.install_local_plugin(&palette_dir)
-        .expect("install palette-grid-wasm");
+        .join("plugins/com.aios.calculator");
+    host.install_local_plugin(&calc_dir)
+        .expect("install com.aios.calculator");
 
     // Start on Root Search frame (depth 1, no plugin_session).
     let mut state = LauncherState::new(NavFrame::new(
         "root.search",
         build_root_showcase_frame().view,
     ));
-    state.insert_text("create");
     assert_eq!(state.depth(), 1);
     assert!(state.current().plugin_session.is_none());
 
-    // Enter & exit `Create Custom Swatch` 3 times in a row and verify keybinds stay intact.
+    // Enter & exit external WASM calculator 3 times and verify Root Search keybinds stay intact.
     for cycle in 0..3 {
-        let open_res = host.run_wasm_command("com.aios.palette-grid", "new-swatch", "[]", "dark");
+        let open_res = host.run_wasm_command("com.aios.calculator", "calculator", "[]", "dark");
         let (frame_id, view) = match open_res.response {
             PluginResponse::Push { frame_id, view } => (frame_id.unwrap_or_default(), *view),
-            other => panic!("cycle {cycle}: expected Push(FormView), got {other:?}"),
+            other => panic!("cycle {cycle}: expected Push(ListView), got {other:?}"),
         };
         let (pid, cid) = open_res
             .active_plugin_session
             .expect("plugin session must be attached");
-        state.push(NavFrame::new(frame_id, view).with_plugin_session(pid, cid));
+        state.push(NavFrame::new(frame_id, view).with_plugin_session(pid.clone(), cid.clone()));
 
         assert_eq!(state.depth(), 2);
-        assert!(matches!(state.current().view, ViewNode::Form(_)));
+        assert!(matches!(state.current().view, ViewNode::List(_)));
         assert!(state.stack[0].plugin_session.is_none());
 
-        // Type inside Form, move with Tab/Shift+Tab and Left/Right, Backspace must NOT pop Form.
-        state.insert_text("Test");
-        state.handle_backspace();
-        assert_eq!(state.depth(), 2);
-        state.handle_tab(false);
-        assert_eq!(state.current().focused_form_field, 1);
-        state.handle_tab(false);
-        assert_eq!(state.current().focused_form_field, 2);
-        state.move_horizontal(1);
-        state.handle_tab(true);
-        assert_eq!(state.current().focused_form_field, 1);
+        state.insert_text("12*8");
+        let search_res = host.send_wasm_event(
+            &pid,
+            &cid,
+            &PluginEvent::SearchTextChanged {
+                command_id: cid.clone(),
+                query: "12*8".to_string(),
+            },
+            "dark",
+        );
+        assert!(matches!(search_res.response, PluginResponse::Render { .. }));
 
-        // Esc exits Form cleanly back to Root Search.
+        // Esc clears query first, then pops back to Root Search.
+        assert_eq!(state.handle_escape(), ShellEffect::None);
+        assert!(state.current().search_query.is_empty());
         assert_eq!(state.handle_escape(), ShellEffect::None);
         assert_eq!(state.depth(), 1);
         assert_eq!(state.current().id, "root.search");
         assert!(state.current().plugin_session.is_none());
 
-        // Root Search keybinds still work normally after exiting Form!
+        // Root Search keybinds still work normally after exiting plugin!
         state.move_vertical(1);
         state.move_vertical(-1);
         state.toggle_filter_dropdown();
@@ -440,18 +441,35 @@ fn palette_plugin_enter_exit_and_form_save_preserve_all_keybinds() {
         assert!(state.overlay.is_none());
     }
 
-    // Now enter Form one more time, fill both required fields, validate, submit, and verify saved swatch!
-    let open_res = host.run_wasm_command("com.aios.palette-grid", "new-swatch", "[]", "dark");
-    let PluginResponse::Push { frame_id, view } = open_res.response else {
-        panic!("expected Push");
-    };
-    let (pid, cid) = open_res.active_plugin_session.expect("session");
+    // Verify Form view Tab/Shift+Tab/Backspace/validation with an attached plugin session.
+    let form_view = aios_plugin_sdk::FormViewBuilder::new("Create Entry")
+        .field(aios_plugin_sdk::FormField::TextField {
+            id: "name".to_string(),
+            label: "Name".to_string(),
+            placeholder: None,
+            value: String::new(),
+            required: true,
+            error: None,
+        })
+        .field(aios_plugin_sdk::FormField::TextField {
+            id: "value".to_string(),
+            label: "Value".to_string(),
+            placeholder: None,
+            value: String::new(),
+            required: true,
+            error: None,
+        })
+        .build();
     state.push(
-        NavFrame::new(frame_id.unwrap(), *view).with_plugin_session(pid.clone(), cid.clone()),
+        NavFrame::new("plugin:com.test.form:create", form_view)
+            .with_plugin_session("com.test.form", "create"),
     );
-
     state.insert_text("Cobalt");
+    state.handle_backspace();
+    state.insert_text("t");
+    assert_eq!(state.depth(), 2);
     state.handle_tab(false);
+    assert_eq!(state.current().focused_form_field, 1);
     state.insert_text("#2459A8");
     let form_values: BTreeMap<String, String> = state
         .validate_active_form()
@@ -459,30 +477,7 @@ fn palette_plugin_enter_exit_and_form_save_preserve_all_keybinds() {
         .into_iter()
         .collect();
     assert_eq!(form_values.get("name").map(String::as_str), Some("Cobalt"));
-    assert_eq!(form_values.get("hex").map(String::as_str), Some("#2459A8"));
-
-    let submit_res = host.send_wasm_event(
-        &pid,
-        &cid,
-        &PluginEvent::FormSubmitted {
-            command_id: cid.clone(),
-            action_id: "swatch.save".to_string(),
-            values: form_values,
-        },
-        "dark",
-    );
-    let PluginResponse::Render { view: updated_view } = submit_res.response else {
-        panic!("expected Render(GridView)");
-    };
-    let ViewNode::Grid(grid) = *updated_view else {
-        panic!("expected GridView");
-    };
-    assert_eq!(grid.sections[0].items.len(), 9);
-    assert_eq!(grid.sections[0].items[8].title, "Cobalt");
-    assert_eq!(
-        grid.sections[0].items[8].subtitle.as_deref(),
-        Some("#2459A8")
-    );
+    assert_eq!(form_values.get("value").map(String::as_str), Some("#2459A8"));
 }
 
 #[test]

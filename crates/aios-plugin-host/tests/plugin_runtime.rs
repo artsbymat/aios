@@ -1,7 +1,7 @@
 //! End-to-end integration tests for Phase 4 Hybrid Plugin Runtime:
 //! - Real WebAssembly Component Model (`wasmtime` + `wit/aios-plugin.wit`) plugins:
 //!   1. `com.test.list-detail` (`List + Split Detail` + `LocalStorage` + `Toast` + capability-gated clipboard)
-//!   2. `com.aios.palette-grid` (`Grid` + `Form` multi-command plugin)
+//!   2. `com.test.grid-form` (`Grid` + `Form` multi-command plugin)
 //!   3. Infinite-loop WASM plugin terminated cleanly by fuel/epoch budget (`ErrorView` isolation)
 //!   4. Trapping (`unreachable`) WASM plugin isolated cleanly into `ErrorView`
 //! - Tier-3 Script Commands (`examples/scripts/system-uptime.sh`, `disk-usage.sh`, + confirmation gate)
@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -284,14 +284,6 @@ fn wat_escape_bytes(bytes: &[u8]) -> String {
     out
 }
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root")
-        .to_path_buf()
-}
-
 fn test_host(tmp: &TempDir) -> (AiosPaths, Arc<Mutex<Database>>, PluginHost) {
     let paths = AiosPaths::from_roots(
         tmp.path(),
@@ -463,17 +455,39 @@ fn list_detail_wasm_plugin_and_capability_gate_work_end_to_end() {
 }
 
 #[test]
-fn palette_grid_and_form_wasm_plugin_runs_end_to_end() {
+fn grid_and_form_wasm_plugin_runs_end_to_end() {
     let tmp = TempDir::new().expect("temp dir");
     let (_paths, _db, mut host) = test_host(&tmp);
 
-    let bundle_dir = tmp.path().join("stage-palette-grid");
+    let bundle_dir = tmp.path().join("stage-grid-form");
     fs::create_dir_all(&bundle_dir).expect("mkdir stage");
-    fs::copy(
-        repo_root().join("examples/plugins/palette-grid-wasm/aios-plugin.toml"),
+    fs::write(
         bundle_dir.join("aios-plugin.toml"),
+        r#"
+[plugin]
+id = "com.test.grid-form"
+name = "Grid Form Test"
+version = "0.1.0"
+author = "AIOS Test"
+description = "Synthetic Grid + Form WASM fixture"
+min_aios_version = "0.1.0"
+entry = "plugin.wasm"
+
+[capabilities]
+clipboard_write = false
+clipboard_read = false
+http_hosts = []
+fs_read = []
+secrets = false
+
+[[commands]]
+id = "swatches"
+title = "Browse Swatches"
+mode = "view"
+default_view = "grid"
+"#,
     )
-    .expect("copy palette-grid manifest");
+    .expect("write grid-form manifest");
 
     let grid_view = GridViewBuilder::new("Palette Swatches (WASM)", 4)
         .aspect_ratio(GridAspectRatio::Square)
@@ -514,7 +528,7 @@ fn palette_grid_and_form_wasm_plugin_runs_end_to_end() {
     let init_json = PluginResponse::render(grid_view)
         .to_json()
         .expect("serialize grid");
-    let event_json = PluginResponse::push(Some("palette.form".to_string()), form_view)
+    let event_json = PluginResponse::push(Some("grid.form".to_string()), form_view)
         .to_json()
         .expect("serialize form push");
 
@@ -525,16 +539,16 @@ fn palette_grid_and_form_wasm_plugin_runs_end_to_end() {
     .expect("write plugin.wasm");
 
     host.install_local_plugin(&bundle_dir)
-        .expect("install palette-grid");
+        .expect("install grid-form");
 
-    let res = host.run_wasm_command("com.aios.palette-grid", "swatches", "[]", "light");
+    let res = host.run_wasm_command("com.test.grid-form", "swatches", "[]", "light");
     assert!(matches!(
         res.response,
         PluginResponse::Push { ref view, .. } if matches!(view.as_ref(), ViewNode::Grid(g) if g.columns == 4)
     ));
 
     let push_form = host.send_wasm_event(
-        "com.aios.palette-grid",
+        "com.test.grid-form",
         "swatches",
         &PluginEvent::ActionTriggered {
             command_id: "swatches".to_string(),
@@ -727,121 +741,6 @@ fn settings_extension_manager_and_dev_watcher_work_end_to_end() {
 }
 
 #[test]
-fn shipped_palette_grid_wasm_saves_custom_swatches_and_reloads() {
-    let tmp = TempDir::new().expect("temp dir");
-    let (_paths, db, mut host) = test_host(&tmp);
-
-    let example_dir = repo_root().join("examples/plugins/palette-grid-wasm");
-    assert!(
-        example_dir.join("plugin.wasm").is_file(),
-        "run `cargo run -p aios-plugin-host --example build_example_plugins` first"
-    );
-
-    let installed = host
-        .install_local_plugin(&example_dir)
-        .expect("install shipped palette-grid-wasm");
-    assert!(
-        installed
-            .icon_path
-            .as_ref()
-            .is_some_and(|p| p.ends_with("icon.svg") && p.is_file()),
-        "expected installed icon.svg, got {:?}",
-        installed.icon_path
-    );
-
-    // 1. Opening `new-swatch` must Push a FormView (never overwrite Root Search).
-    let open_form = host.run_wasm_command("com.aios.palette-grid", "new-swatch", "[]", "dark");
-    assert!(
-        matches!(
-            open_form.response,
-            PluginResponse::Push { ref frame_id, ref view }
-                if frame_id.as_deref() == Some("plugin:com.aios.palette-grid:new-swatch")
-                && matches!(view.as_ref(), ViewNode::Form(_))
-        ),
-        "expected Push(FormView), got {:#?}",
-        open_form.response
-    );
-
-    // 2. Submitting the Form persists the new swatch in SQLite LocalStorage and renders updated Grid.
-    let mut values = BTreeMap::new();
-    values.insert("name".to_string(), "Ocean Mineral".to_string());
-    values.insert("hex".to_string(), "#1E6F9F".to_string());
-    values.insert("theme".to_string(), "dark".to_string());
-
-    let submit_res = host.send_wasm_event(
-        "com.aios.palette-grid",
-        "new-swatch",
-        &PluginEvent::FormSubmitted {
-            command_id: "new-swatch".to_string(),
-            action_id: "swatch.save".to_string(),
-            values,
-        },
-        "dark",
-    );
-
-    assert!(submit_res.side_effects.iter().any(|s| matches!(
-        s,
-        HostSideEffect::ShowToast(t) if t.title == "Saved Custom Swatch"
-    )));
-    assert!(submit_res.side_effects.iter().any(|s| matches!(
-        s,
-        HostSideEffect::ShowHud(h) if h.title == "Saved Custom Swatch"
-    )));
-
-    match submit_res.response {
-        PluginResponse::Render { view } => match *view {
-            ViewNode::Grid(grid) => {
-                let items = &grid.sections[0].items;
-                assert_eq!(items.len(), 9, "8 default + 1 saved custom swatch");
-                let last = items.last().expect("saved swatch");
-                assert_eq!(last.title, "Ocean Mineral");
-                assert_eq!(last.subtitle.as_deref(), Some("#1E6F9F"));
-            }
-            other => panic!("expected updated GridView, got {other:?}"),
-        },
-        other => panic!("expected Render(GridView), got {other:?}"),
-    }
-
-    // 3. Verify SQLite persistence survives reopening `swatches`.
-    let raw_saved = db
-        .lock()
-        .expect("lock db")
-        .plugin_storage_get("com.aios.palette-grid", "custom_swatches_v1")
-        .expect("read saved swatches");
-    assert!(raw_saved.is_some());
-
-    let reopened = host.run_wasm_command("com.aios.palette-grid", "swatches", "[]", "dark");
-    match reopened.response {
-        PluginResponse::Push { view, .. } => match *view {
-            ViewNode::Grid(grid) => {
-                assert_eq!(grid.sections[0].items.len(), 9);
-                assert!(grid.sections[0].items.iter().any(
-                    |i| i.title == "Ocean Mineral" && i.subtitle.as_deref() == Some("#1E6F9F")
-                ));
-            }
-            other => panic!("expected GridView on reopen, got {other:?}"),
-        },
-        other => panic!("expected Push(GridView) on reopen, got {other:?}"),
-    }
-
-    // 4. Unrelated events (SearchTextChanged / DropdownChanged) must return Noop (never push Form).
-    let search_ev = host.send_wasm_event(
-        "com.aios.palette-grid",
-        "swatches",
-        &PluginEvent::SearchTextChanged {
-            command_id: "swatches".to_string(),
-            query: "a".to_string(),
-        },
-        "dark",
-    );
-    assert!(
-        matches!(search_ev.response, PluginResponse::Noop),
-        "expected Noop for SearchTextChanged, got {:#?}",
-        search_ev.response
-    );
-}
-
-#[test]
 fn inline_calculator_copy_action_copies_and_closes_main_window() {
     let tmp = TempDir::new().expect("temp dir");
     let (_paths, _db, mut host) = test_host(&tmp);
@@ -874,4 +773,204 @@ fn inline_calculator_copy_action_copies_and_closes_main_window() {
         Some("asset://icons/plugins/calculator.svg")
     );
     assert_eq!(badge, "=");
+}
+
+#[test]
+fn bundled_external_wasm_calculator_shadows_builtin_runs_inline_and_toggles_cleanly() {
+    let wasm_bundle_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../dist/plugins/com.aios.calculator");
+    assert!(
+        wasm_bundle_src.join("plugin.wasm").is_file(),
+        "expected compiled wasm32-wasip2 bundle at {}",
+        wasm_bundle_src.display()
+    );
+
+    let tmp = TempDir::new().expect("temp dir");
+    let bundled_root = tmp.path().join("bundled");
+    let bundled_calc_dir = bundled_root.join("com.aios.calculator");
+    aios_plugin_host::install_plugin_from_dir(&wasm_bundle_src, &bundled_root)
+        .expect("stage bundled calculator");
+    assert!(bundled_calc_dir.join("plugin.wasm").is_file());
+
+    let (_paths, _db, mut host) = test_host(&tmp);
+    host = host.with_bundled_dirs(vec![bundled_root.clone()]);
+
+    // 1. Two-layer discovery finds external WASM Calculator as `Bundled`.
+    let calc = host
+        .find_plugin("com.aios.calculator")
+        .expect("bundled external calculator loaded");
+    assert_eq!(calc.origin, aios_plugin_host::PluginOrigin::Bundled);
+    assert!(calc.manifest.inline_trigger.is_configured());
+    assert!(!calc.manifest.inline_trigger.matches_fast_gate("firefox"));
+    assert!(calc.manifest.inline_trigger.matches_fast_gate("10*30"));
+    assert!(calc.manifest.inline_trigger.matches_fast_gate("=pi"));
+
+    // Probe init_command first so any Wasmtime instantiation error prints clearly in test output.
+    let probe = host.run_wasm_command("com.aios.calculator", "calculator", "[]", "dark");
+    if let PluginResponse::Push { view, .. } = &probe.response
+        && let ViewNode::Error(err) = view.as_ref()
+    {
+        panic!("WASM calculator failed to execute: {} | {:?}", err.title, err.detail);
+    }
+
+    // 2. Live inline evaluation executes inside Wasmtime sandbox & resolves icon.svg relative to bundle.
+    assert!(host.evaluate_inline_query("firefox", "dark").is_empty());
+    let inline = host.evaluate_inline_query("1500 ml to l", "dark");
+    assert_eq!(inline.len(), 1);
+    assert_eq!(inline[0].copy_value, "1.5");
+    assert_eq!(inline[0].title, "1.5 L");
+    assert!(
+        inline[0]
+            .icon_path
+            .as_deref()
+            .is_some_and(|p| p.ends_with("com.aios.calculator/icon.svg")),
+        "expected resolved bundle icon.svg, got {:?}",
+        inline[0].icon_path
+    );
+
+    // 3. Inline copy action executes inside WASM, writes SQLite history, and closes window.
+    let copy_res = host
+        .dispatch_host_action(&inline[0].copy_action_id, &[], None, "dark")
+        .expect("inline action dispatched");
+    assert!(matches!(
+        copy_res.response,
+        PluginResponse::CopyToClipboard { ref text, .. } if text == "1.5"
+    ));
+    assert!(
+        copy_res
+            .side_effects
+            .iter()
+            .any(|e| matches!(e, aios_plugin_host::HostSideEffect::CloseMainWindow))
+    );
+
+    // 4. Launching Calculator command resolves category SVG relative paths (`icons/calc-unit.svg`).
+    let open = host.run_wasm_command(
+        "com.aios.calculator",
+        "calculator",
+        r#"["24 px to rem"]"#,
+        "dark",
+    );
+    let PluginResponse::Push { view, .. } = open.response else {
+        panic!("expected Push ListView from WASM calculator");
+    };
+    let ViewNode::List(list) = *view else {
+        panic!("expected ListView");
+    };
+    assert_eq!(list.sections[0].items[0].title, "1.5 rem");
+    assert!(
+        list.sections[0].items[0]
+            .icon_path
+            .as_deref()
+            .is_some_and(|p| p.ends_with("icons/calc-unit.svg")),
+        "expected resolved category icon, got {:?}",
+        list.sections[0].items[0].icon_path
+    );
+
+    // 5. Disabling the bundled plugin hides it from Root Search & inline queries without deleting files.
+    host.set_plugin_enabled("com.aios.calculator", false)
+        .expect("disable calculator");
+    assert!(host.evaluate_inline_query("10*30", "dark").is_empty());
+    assert!(
+        !host
+            .root_search_entries()
+            .iter()
+            .any(|e| e.id.starts_with("plugin:com.aios.calculator:"))
+    );
+    host.set_plugin_enabled("com.aios.calculator", true)
+        .expect("re-enable calculator");
+    assert_eq!(host.evaluate_inline_query("10*30", "dark").len(), 1);
+}
+
+#[test]
+fn plugin_archive_pack_sha256_registry_and_store_install_work_end_to_end() {
+    let wasm_bundle_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../dist/plugins/com.aios.calculator");
+    let tmp = TempDir::new().expect("temp dir");
+
+    // 1. Pack `.aios-plugin` tarball and verify SHA-256 round-trip.
+    let archive_path = tmp.path().join("com.aios.calculator-v0.1.0.aios-plugin");
+    let (packed_meta, sha256) =
+        aios_plugin_host::pack_plugin_dir(&wasm_bundle_src, &archive_path)
+            .expect("pack .aios-plugin archive");
+    assert_eq!(packed_meta.manifest.id, "com.aios.calculator");
+    assert_eq!(sha256.len(), 64);
+
+    // Tampered SHA-256 MUST be rejected before extraction.
+    let archive_bytes = fs::read(&archive_path).expect("read archive");
+    let bad_sha = "0".repeat(64);
+    assert!(
+        aios_plugin_host::install_plugin_archive_bytes(
+            &archive_bytes,
+            Some(&bad_sha),
+            &tmp.path().join("rejected"),
+        )
+        .is_err()
+    );
+
+    // 2. Build a local file:// registry index.json from `registry/plugins/*.toml`.
+    let reg_dir = tmp.path().join("registry");
+    fs::create_dir_all(reg_dir.join("plugins")).expect("mkdir registry/plugins");
+    let entry_toml = format!(
+        r#"
+id = "com.aios.calculator"
+name = "Calculator & Converter"
+author = "AIOS"
+description = "External WASM calculator"
+repository = "https://github.com/artsbymat/aios"
+category = "productivity"
+tags = ["math", "units"]
+capabilities = ["clipboard_write"]
+
+[latest]
+version = "0.1.0"
+min_aios_version = "0.1.0"
+download_url = "file://{}"
+sha256 = "{sha256}"
+"#,
+        archive_path.display()
+    );
+    fs::write(reg_dir.join("plugins/com.aios.calculator.toml"), entry_toml)
+        .expect("write registry entry");
+
+    let index = aios_plugin_host::build_registry_index_from_dir(&reg_dir)
+        .expect("build registry index");
+    assert_eq!(index.plugins.len(), 1);
+    let index_path = reg_dir.join("index.json");
+    fs::write(&index_path, serde_json::to_string_pretty(&index).unwrap())
+        .expect("write index.json");
+
+    // 3. Configure PluginHost with the local file:// registry URL and install via Store/Registry.
+    let paths = AiosPaths::from_roots(tmp.path(), None, None, None, None);
+    paths.ensure_dirs().expect("ensure dirs");
+    let db = Arc::new(Mutex::new(
+        Database::open(&paths.database_file()).expect("open db"),
+    ));
+    let mut cfg = AiosConfig::default();
+    cfg.plugins.registry_urls = vec![format!("file://{}", index_path.display())];
+    let mut host =
+        PluginHost::new(cfg, paths, Arc::clone(&db), WasmExecutionLimits::default())
+            .expect("init host");
+
+    let fetched = aios_plugin_host::fetch_registry_index(
+        &host.config().plugins.registry_urls,
+        &db,
+        6,
+        true,
+    )
+    .expect("fetch file:// index");
+    assert_eq!(fetched.plugins.len(), 1);
+
+    let store_before = host.build_store_view();
+    let ViewNode::List(store_list) = store_before else {
+        panic!("expected ListView for Plugin Store");
+    };
+    assert_eq!(store_list.sections[0].items[0].id, "store:com.aios.calculator");
+
+    // Install from registry with SHA-256 verification and verify user-installed layer shadows bundled.
+    let installed = host
+        .install_registry_plugin("com.aios.calculator")
+        .expect("install from registry");
+    assert_eq!(installed.origin, aios_plugin_host::PluginOrigin::UserInstalled);
+    assert!(installed.root_dir.join("icons/calc-unit.svg").is_file());
+    assert_eq!(host.evaluate_inline_query("24 * 12", "dark")[0].copy_value, "288");
 }

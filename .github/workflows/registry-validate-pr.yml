@@ -1,0 +1,37 @@
+name: Validate Plugin Registry PR
+
+on:
+  pull_request:
+    paths:
+      - "registry/plugins/*.toml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build registry index and validate schema
+        run: cargo run -p aios-app -- plugin registry-build registry --out /tmp/index.json
+      - name: Verify changed plugin archives & SHA-256
+        run: |
+          python3 - <<'PY'
+          import json, hashlib, urllib.request, pathlib, subprocess, sys
+
+          idx = json.loads(pathlib.Path("/tmp/index.json").read_text())
+          for p in idx["plugins"]:
+              url = p["latest"]["download_url"]
+              if not url.startswith("https://"):
+                  print(f"SKIP non-HTTPS dev URL for {p['id']}: {url}")
+                  continue
+              print(f"Checking {p['id']} v{p['latest']['version']} from {url} ...")
+              with urllib.request.urlopen(url, timeout=20) as resp:
+                  data = resp.read()
+              if len(data) > 16 * 1024 * 1024:
+                  sys.exit(f"ERROR: {p['id']} exceeds 16 MiB limit")
+              actual = hashlib.sha256(data).hexdigest()
+              expected = p["latest"]["sha256"].lower()
+              if actual != expected:
+                  sys.exit(f"ERROR: SHA-256 mismatch for {p['id']}: expected {expected}, got {actual}")
+              print(f"  OK sha256={actual[:16]}... size={len(data)} bytes")
+          PY

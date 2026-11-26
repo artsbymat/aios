@@ -17,7 +17,7 @@ use aios_plugin_sdk::{
 };
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::manifest::InstalledPlugin;
 use crate::permissions::{HostContext, HostSideEffect, now_epoch_secs};
@@ -261,10 +261,13 @@ impl WasmPluginRuntime {
         let component = self.load_component(plugin)?;
 
         let mut linker: Linker<PluginStoreState> = Linker::new(&self.engine);
-        wasmtime_wasi::add_to_linker_sync(&mut linker)
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
             .map_err(|e| format!("failed to link WASI preview2: {e}"))?;
-        bindings::aios::plugin::host_api::add_to_linker(&mut linker, |state| state)
-            .map_err(|e| format!("failed to link aios:plugin/host-api: {e}"))?;
+        bindings::aios::plugin::host_api::add_to_linker::<_, wasmtime::component::HasSelf<_>>(
+            &mut linker,
+            |state| state,
+        )
+        .map_err(|e| format!("failed to link aios:plugin/host-api: {e}"))?;
 
         // Zero ambient authority WASI context: no preopened dirs, no host env, no sockets.
         let wasi = WasiCtxBuilder::new().build();
@@ -337,12 +340,11 @@ struct PluginStoreState {
 }
 
 impl WasiView for PluginStoreState {
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
-    }
-
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
     }
 }
 

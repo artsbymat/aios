@@ -1,7 +1,29 @@
 //! Ergonomic plugin SDK shared by built-in Rust plugins, host manifest loaders, and WASM guests.
 
 pub mod builders;
+#[cfg(feature = "guest")]
+pub mod guest;
 pub mod protocol;
+
+/// Convenience re-exports for plugin authors (`use aios_plugin_sdk::prelude::*;`).
+pub mod prelude {
+    pub use crate::builders::{
+        ActionPanelBuilder, DetailViewBuilder, FormViewBuilder, GridItemBuilder, GridViewBuilder,
+        ListItemBuilder, ListViewBuilder, error_view,
+    };
+    #[cfg(feature = "guest")]
+    pub use crate::guest::{AiosPlugin, host};
+    pub use crate::protocol::{
+        InlinePluginResult, MenuBarItem, MenuBarState, PluginEvent, PluginResponse,
+    };
+    pub use aios_core::view::{
+        Accessory, ActionItem, ActionPanel, ActionSection, CommandMode, ConfirmAlert, DetailView,
+        EmptyView, ErrorView, FilterDropdown, FilterMode, FilterOption, FormField, FormView,
+        GridAspectRatio, GridItem, GridItemContent, GridSection, GridView, HudMessage,
+        InlineArgumentSpec, ItemDetail, ListItem, ListSection, ListView, MetadataEntry,
+        SemanticTone, ToastMessage, ToastStyle, ViewNode,
+    };
+}
 
 pub use aios_core::view::{
     Accessory, ActionItem, ActionPanel, ActionSection, CommandMode, ConfirmAlert, DetailView,
@@ -14,7 +36,7 @@ pub use builders::{
     ActionPanelBuilder, DetailViewBuilder, FormViewBuilder, GridItemBuilder, GridViewBuilder,
     ListItemBuilder, ListViewBuilder, error_view,
 };
-pub use protocol::{MenuBarItem, MenuBarState, PluginEvent, PluginResponse};
+pub use protocol::{InlinePluginResult, MenuBarItem, MenuBarState, PluginEvent, PluginResponse};
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +46,8 @@ pub struct PluginManifestFile {
     pub plugin: PluginMetadata,
     #[serde(default)]
     pub capabilities: PluginCapabilities,
+    #[serde(default)]
+    pub inline_trigger: InlineTriggerSpec,
     #[serde(default)]
     pub preferences: Vec<PreferenceSpec>,
     #[serde(default)]
@@ -85,9 +109,90 @@ impl PluginManifestFile {
             entry: self.plugin.entry,
             icon: self.plugin.icon,
             capabilities: self.capabilities,
+            inline_trigger: self.inline_trigger,
             preferences: self.preferences,
             commands: self.commands,
         }
+    }
+}
+
+/// Declarative sub-microsecond host fast-gate (`[inline_trigger]` in `aios-plugin.toml`).
+///
+/// The AIOS host evaluates this rule natively before invoking Wasmtime so normal app queries
+/// (`"firefox"`, `"code"`, `"settings"`) incur zero WASM startup overhead.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InlineTriggerSpec {
+    /// Explicit prefixes that always trigger inline evaluation (e.g. `["="]`).
+    pub prefixes: Vec<String>,
+    /// Accept queries beginning with an ASCII digit followed by an operator, unit, or base suffix.
+    pub match_numeric_expressions: bool,
+    /// Leading characters/symbols that trigger inline evaluation (e.g. `["$", "€", "(", "-"]`).
+    pub leading_chars: Vec<String>,
+    /// Case-insensitive leading keywords/prefixes (e.g. `["today", "now ", "sqrt("]`).
+    pub leading_keywords: Vec<String>,
+}
+
+impl InlineTriggerSpec {
+    #[must_use]
+    pub fn is_configured(&self) -> bool {
+        !self.prefixes.is_empty()
+            || self.match_numeric_expressions
+            || !self.leading_chars.is_empty()
+            || !self.leading_keywords.is_empty()
+    }
+
+    /// Evaluates the fast-gate in nanoseconds with zero regex overhead.
+    #[must_use]
+    pub fn matches_fast_gate(&self, raw: &str) -> bool {
+        let s = raw.trim();
+        if s.is_empty() || !self.is_configured() {
+            return false;
+        }
+        if self.prefixes.iter().any(|p| !p.is_empty() && s.starts_with(p.as_str())) {
+            return true;
+        }
+        if self
+            .leading_chars
+            .iter()
+            .any(|c| !c.is_empty() && s.starts_with(c.as_str()))
+        {
+            return true;
+        }
+        let first = s.as_bytes()[0];
+        if self.match_numeric_expressions && first.is_ascii_digit() {
+            let has_indicator = s.bytes().any(|b| {
+                matches!(
+                    b,
+                    b'+' | b'-'
+                        | b'*'
+                        | b'/'
+                        | b'%'
+                        | b'^'
+                        | b'!'
+                        | b'&'
+                        | b'|'
+                        | b'<'
+                        | b'>'
+                        | b' '
+                        | b'a'..=b'z'
+                        | b'A'..=b'Z'
+                )
+            });
+            if has_indicator {
+                return true;
+            }
+        }
+        if !self.leading_keywords.is_empty() {
+            let lower = s.to_ascii_lowercase();
+            if self.leading_keywords.iter().any(|kw| {
+                let kw_l = kw.to_ascii_lowercase();
+                !kw_l.is_empty() && (lower == kw_l || lower.starts_with(&kw_l))
+            }) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -188,6 +293,8 @@ pub struct PluginManifest {
     pub icon: Option<String>,
     #[serde(default)]
     pub capabilities: PluginCapabilities,
+    #[serde(default)]
+    pub inline_trigger: InlineTriggerSpec,
     #[serde(default)]
     pub preferences: Vec<PreferenceSpec>,
     #[serde(default)]

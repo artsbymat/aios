@@ -94,6 +94,45 @@ impl AiosPaths {
         self.data_dir.join("plugins")
     }
 
+    /// Ordered candidate directories containing shipped default external WASM plugin bundles.
+    /// User-installed plugins in [`Self::plugins_dir`] always shadow bundled plugins with the same ID.
+    #[must_use]
+    pub fn bundled_plugins_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(env_dir) = std::env::var_os("AIOS_BUNDLED_PLUGINS_DIR")
+            && !env_dir.is_empty()
+        {
+            dirs.push(PathBuf::from(env_dir));
+        }
+        let local_bundled = self.data_dir.join("bundled-plugins");
+        if local_bundled.is_dir() && !dirs.contains(&local_bundled) {
+            dirs.push(local_bundled);
+        }
+        // Avoid leaking ambient host/repo bundled plugins into isolated `TempDir` test sandboxes.
+        if self.data_dir.starts_with(std::env::temp_dir()) {
+            return dirs;
+        }
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(exe_dir) = exe.parent()
+        {
+            let sibling = exe_dir.join("plugins");
+            if sibling.is_dir() && !dirs.contains(&sibling) {
+                dirs.push(sibling);
+            }
+        }
+        let system_dir = PathBuf::from("/usr/share/aios/plugins");
+        if system_dir.is_dir() && !dirs.contains(&system_dir) {
+            dirs.push(system_dir);
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            let dev_dir = cwd.join("dist").join("plugins");
+            if dev_dir.is_dir() && !dirs.contains(&dev_dir) {
+                dirs.push(dev_dir);
+            }
+        }
+        dirs
+    }
+
     pub fn icons_cache_dir(&self) -> PathBuf {
         self.cache_dir.join("icons")
     }

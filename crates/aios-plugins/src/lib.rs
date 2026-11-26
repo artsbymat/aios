@@ -5,38 +5,21 @@
 //! shared SQLite plugin KV / preferences store via [`PluginHost`], while staying completely
 //! decoupled from AIOS core (`aios-builtin`).
 
+#[cfg(feature = "host")]
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "host")]
 use aios_core::Database;
+pub use aios_plugin_sdk::InlinePluginResult;
+#[cfg(feature = "host")]
 use aios_plugin_sdk::{PluginEvent, PluginManifest, PluginResponse};
 
 pub mod calculator;
 
-/// Result emitted by an opt-in inline Root Search plugin (for example Calculator) when a query
-/// passes its fast-gate check.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InlinePluginResult {
-    pub id: String,
-    pub plugin_id: String,
-    pub command_id: String,
-    pub section_title: String,
-    pub section_subtitle: Option<String>,
-    pub title: String,
-    pub subtitle: String,
-    pub badge: String,
-    pub icon_path: Option<String>,
-    pub tag_label: String,
-    pub copy_value: String,
-    pub copy_action_id: String,
-    pub open_action_id: String,
-    pub open_action_title: String,
-    /// When `true` (e.g. explicit `=...` prefix), Root Search focuses exclusively on inline results.
-    pub exclusive: bool,
-}
-
 /// Scoped host environment passed into first-party plugins for SQLite KV storage, preferences,
 /// and theme awareness.
+#[cfg(feature = "host")]
 #[derive(Debug)]
 pub struct PluginEnv<'a> {
     pub plugin_id: &'a str,
@@ -44,6 +27,7 @@ pub struct PluginEnv<'a> {
     db: Arc<Mutex<Database>>,
 }
 
+#[cfg(feature = "host")]
 impl<'a> PluginEnv<'a> {
     #[must_use]
     pub fn new(plugin_id: &'a str, theme_mode: &'a str, db: Arc<Mutex<Database>>) -> Self {
@@ -93,6 +77,7 @@ impl<'a> PluginEnv<'a> {
 }
 
 /// Contract implemented by all first-party AIOS plugins, matching the WASM plugin lifecycle.
+#[cfg(feature = "host")]
 pub trait FirstPartyPlugin: Send + Sync + std::fmt::Debug {
     fn manifest(&self) -> PluginManifest;
 
@@ -140,13 +125,15 @@ pub trait FirstPartyPlugin: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// Returns the default suite of enabled first-party AIOS plugins.
+/// Returns the default suite of enabled first-party AIOS fallback plugins.
+#[cfg(feature = "host")]
 #[must_use]
 pub fn default_first_party_plugins() -> Vec<Box<dyn FirstPartyPlugin>> {
     vec![Box::new(calculator::CalculatorPlugin::new())]
 }
 
-pub(crate) fn now_epoch_secs() -> i64 {
+#[must_use]
+pub fn now_epoch_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

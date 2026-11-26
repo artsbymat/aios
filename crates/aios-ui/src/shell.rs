@@ -206,6 +206,15 @@ impl LauncherWindow {
             cx.notify();
             return;
         }
+        if normalized == "store" || normalized == "plugin-store" {
+            self.state.pop_to_root();
+            let view = self.plugin_host.borrow().build_store_view();
+            self.state
+                .push(crate::state::NavFrame::new("settings.store", view));
+            self.request_scroll_sync();
+            cx.notify();
+            return;
+        }
         if normalized == "scripts" {
             self.state.pop_to_root();
             let view = self.script_host.borrow().build_manager_view();
@@ -432,7 +441,7 @@ impl LauncherWindow {
                     state.tooltip,
                 );
             }
-            PluginResponse::Noop => {}
+            PluginResponse::InlineResult { .. } | PluginResponse::Noop => {}
         }
 
         for effect in deferred_effects {
@@ -835,10 +844,155 @@ impl LauncherWindow {
             return;
         }
 
-        // 1b. Handle WASM Plugin Host (`plugin.*`, `settings.*`, `core.open-settings`).
+        if action_id == "store.refresh" {
+            self.state.show_toast(
+                ToastStyle::Animated,
+                "Refreshing Plugin Store...",
+                Some("Fetching registry index.json in background".to_string()),
+            );
+            cx.notify();
+            let (urls, ttl, db) = {
+                let host = self.plugin_host.borrow();
+                (
+                    host.config().plugins.registry_urls.clone(),
+                    host.config().plugins.auto_refresh_hours,
+                    host.db_arc(),
+                )
+            };
+            cx.spawn(async move |this, cx| {
+                let res = cx
+                    .background_executor()
+                    .spawn(async move {
+                        aios_plugin_host::fetch_registry_index(&urls, &db, ttl, true)
+                    })
+                    .await;
+                let _ = this.update(cx, |win, cx| {
+                    match res {
+                        Ok(index) => {
+                            win.state.show_toast(
+                                ToastStyle::Success,
+                                format!("Plugin Store updated ({} plugins)", index.plugins.len()),
+                                None,
+                            );
+                            if win.state.current().id == "settings.store" {
+                                let updated = win
+                                    .plugin_host
+                                    .borrow()
+                                    .build_store_view_with_index(Some(&index));
+                                win.state.current_mut().view = updated;
+                                win.state.current_mut().clamp_selection();
+                            }
+                        }
+                        Err(err) => {
+                            win.state.show_toast(
+                                ToastStyle::Failure,
+                                "Store refresh failed",
+                                Some(err),
+                            );
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
+
+        if let Some(target_id) = action_id
+            .strip_prefix("store.install:")
+            .or_else(|| action_id.strip_prefix("store.update:"))
+        {
+            let target_id = target_id.to_owned();
+            let is_update = action_id.starts_with("store.update:");
+            self.state.show_toast(
+                ToastStyle::Animated,
+                if is_update {
+                    format!("Updating {target_id}...")
+                } else {
+                    format!("Installing {target_id}...")
+                },
+                Some("Downloading .aios-plugin and verifying SHA-256".to_string()),
+            );
+            cx.notify();
+            let (urls, ttl, plugins_dir, db) = {
+                let host = self.plugin_host.borrow();
+                (
+                    host.config().plugins.registry_urls.clone(),
+                    host.config().plugins.auto_refresh_hours,
+                    host.paths().plugins_dir(),
+                    host.db_arc(),
+                )
+            };
+            cx.spawn(async move |this, cx| {
+                let res = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let index =
+                            aios_plugin_host::fetch_registry_index(&urls, &db, ttl, false)?;
+                        let entry = index
+                            .plugins
+                            .iter()
+                            .find(|p| p.id == target_id)
+                            .ok_or_else(|| {
+                                format!("plugin '{target_id}' not found in registry index")
+                            })?;
+                        let installed = aios_plugin_host::install_plugin_from_registry_entry(
+                            entry,
+                            &plugins_dir,
+                            &db,
+                        )?;
+                        Ok::<_, String>((installed, index))
+                    })
+                    .await;
+                let _ = this.update(cx, |win, cx| {
+                    match res {
+                        Ok((installed, index)) => {
+                            win.plugin_host.borrow_mut().reload_all();
+                            sync_external_entries_to_root_search(
+                                &win.root_search,
+                                &win.plugin_host,
+                                &win.script_host,
+                            );
+                            win.refresh_root_search();
+                            if win.state.current().id == "settings.store" {
+                                let updated = win
+                                    .plugin_host
+                                    .borrow()
+                                    .build_store_view_with_index(Some(&index));
+                                win.state.current_mut().view = updated;
+                                win.state.current_mut().clamp_selection();
+                            }
+                            win.state.show_toast(
+                                ToastStyle::Success,
+                                format!(
+                                    "{} {} v{}",
+                                    if is_update { "Updated" } else { "Installed" },
+                                    installed.manifest.name,
+                                    installed.manifest.version
+                                ),
+                                None,
+                            );
+                        }
+                        Err(err) => {
+                            win.state.show_toast(
+                                ToastStyle::Failure,
+                                "Plugin installation failed",
+                                Some(err),
+                            );
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
+
+        // 1b. Handle WASM Plugin Host (`plugin.*`, `settings.*`, `core.open-settings`, `core.open-store`).
         let is_plugin_host_action = action_id.starts_with("plugin.")
             || action_id.starts_with("settings.")
-            || action_id == "core.open-settings";
+            || action_id == "core.open-settings"
+            || action_id == "core.open-store";
 
         if is_plugin_host_action {
             let needs_form_values = action_id == "settings.install-plugin-submit"
@@ -873,6 +1027,7 @@ impl LauncherWindow {
                     || action_id == "settings.reload-all"
                     || action_id == "settings.install-plugin-submit"
                     || action_id.starts_with("settings.plugin-uninstall-confirm:")
+                    || action_id.starts_with("settings.plugin-toggle:")
                     || action_id.starts_with("plugin.reload:");
                 if mutates_registry {
                     sync_external_entries_to_root_search(

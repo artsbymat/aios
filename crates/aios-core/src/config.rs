@@ -124,6 +124,25 @@ impl Default for FallbackCommandConfig {
     }
 }
 
+/// Plugin Store registry configuration (`[plugins]` in `config.toml`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginRegistryConfig {
+    /// Ordered list of registry `index.json` URLs (supports `https://`, `file://`, or local path).
+    pub registry_urls: Vec<String>,
+    /// Cache TTL in hours before refreshing registry `index.json` in background (`0` = manual only).
+    pub auto_refresh_hours: u64,
+}
+
+impl Default for PluginRegistryConfig {
+    fn default() -> Self {
+        Self {
+            registry_urls: vec!["https://artsbymat.github.io/aios/index.json".to_string()],
+            auto_refresh_hours: 6,
+        }
+    }
+}
+
 /// Top-level user configuration persisted at `$XDG_CONFIG_HOME/aios/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -131,6 +150,7 @@ pub struct AiosConfig {
     pub theme: ThemeConfig,
     pub window: WindowConfig,
     pub clipboard: ClipboardConfig,
+    pub plugins: PluginRegistryConfig,
     pub aliases: BTreeMap<String, String>,
     pub hotkeys: BTreeMap<String, String>,
     pub fallback_commands: Vec<FallbackCommandConfig>,
@@ -146,6 +166,7 @@ impl Default for AiosConfig {
             theme: ThemeConfig::default(),
             window: WindowConfig::default(),
             clipboard: ClipboardConfig::default(),
+            plugins: PluginRegistryConfig::default(),
             aliases,
             hotkeys: BTreeMap::new(),
             fallback_commands: vec![FallbackCommandConfig::default()],

@@ -1,6 +1,6 @@
 //! Declarative Settings & Plugins views built with AIOS's own Multi-View UI AST.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use aios_core::{AiosConfig, AiosPaths};
 use aios_plugin_sdk::{
@@ -9,7 +9,8 @@ use aios_plugin_sdk::{
     PreferenceKind, SemanticTone, ViewNode,
 };
 
-use crate::manifest::InstalledPlugin;
+use crate::manifest::{InstalledPlugin, PluginOrigin};
+use crate::registry::{PluginRegistryIndex, is_newer_version};
 
 /// Builds the main Settings & Plugins `List + Split Detail` view.
 #[must_use]
@@ -19,7 +20,14 @@ pub fn build_settings_home_view(
     plugins: &[InstalledPlugin],
     permissions_by_plugin: &HashMap<String, HashMap<String, bool>>,
 ) -> ViewNode {
-    build_settings_home_view_with_first_party(config, paths, &[], plugins, permissions_by_plugin)
+    build_settings_home_view_with_first_party(
+        config,
+        paths,
+        &[],
+        plugins,
+        permissions_by_plugin,
+        &HashSet::new(),
+    )
 }
 
 /// Builds the main Settings & Plugins `List + Split Detail` view including first-party plugins.
@@ -30,6 +38,7 @@ pub fn build_settings_home_view_with_first_party(
     first_party: &[(PluginManifest, &'static str)],
     plugins: &[InstalledPlugin],
     permissions_by_plugin: &HashMap<String, HashMap<String, bool>>,
+    disabled_plugins: &HashSet<String>,
 ) -> ViewNode {
     let mut builder = ListViewBuilder::new("AIOS Settings & Plugins")
         .placeholder("Search settings, WASM plugins, or capabilities...")
@@ -157,6 +166,37 @@ pub fn build_settings_home_view_with_first_party(
                     .build(),
             )
             .build(),
+        ListItemBuilder::new("settings:plugin-store", "Browse Plugin Store")
+            .subtitle("Discover, install, and update verified WASM plugins from registries")
+            .icon("ST")
+            .filter_group("plugins")
+            .keyword("store")
+            .keyword("registry")
+            .keyword("download")
+            .keyword("install")
+            .keyword("plugin")
+            .accessory_tag("Store", SemanticTone::Accent)
+            .detail(
+                format!(
+                    "# AIOS Plugin Store\n\nBrowse community and official external WASM plugins backed by static GitHub Releases and SHA-256 verification.\n\n## Configured Registries\n\n{}",
+                    config
+                        .plugins
+                        .registry_urls
+                        .iter()
+                        .map(|u| format!("- `{u}`"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+                vec![MetadataEntry::Label {
+                    title: "Auto Refresh".to_string(),
+                    text: format!("{}h TTL", config.plugins.auto_refresh_hours),
+                }],
+            )
+            .actions(ActionPanel::from_actions(vec![
+                ActionItem::new("settings.open-store", "Open Plugin Store").shortcut("Enter"),
+                ActionItem::new("store.refresh", "Refresh Store Index").shortcut("Ctrl+Enter"),
+            ]))
+            .build(),
         ListItemBuilder::new("settings:install-local", "Install Local WASM Plugin...")
             .subtitle("Copy a local plugin folder (aios-plugin.toml + plugin.wasm)")
             .icon("IN")
@@ -195,13 +235,22 @@ pub fn build_settings_home_view_with_first_party(
                     .map(|c| format!("- `{}`: {}", c.id, c.title))
                     .collect::<Vec<_>>()
                     .join("\n");
+                let is_disabled = disabled_plugins.contains(&m.id);
+                let toggle_label = if is_disabled {
+                    "Enable Plugin"
+                } else {
+                    "Disable Plugin"
+                };
                 let mut actions = ActionPanelBuilder::new().section(
                     Some("Plugin"),
-                    vec![ActionItem::new(
-                        format!("settings.plugin-prefs:{}", m.id),
-                        "Configure Preferences",
-                    )
-                    .shortcut("Enter")],
+                    vec![
+                        ActionItem::new(
+                            format!("settings.plugin-prefs:{}", m.id),
+                            "Configure Preferences",
+                        )
+                        .shortcut("Enter"),
+                        ActionItem::new(format!("settings.plugin-toggle:{}", m.id), toggle_label),
+                    ],
                 );
                 if let Some(first_cmd) = m.commands.first() {
                     actions = actions.section(
@@ -220,7 +269,14 @@ pub fn build_settings_home_view_with_first_party(
                     .filter_group("plugins")
                     .keyword("plugin")
                     .keyword(m.id.clone())
-                    .accessory_tag("First-Party", SemanticTone::Accent)
+                    .accessory_tag(
+                        if is_disabled { "Disabled" } else { "Built-in" },
+                        if is_disabled {
+                            SemanticTone::Neutral
+                        } else {
+                            SemanticTone::Accent
+                        },
+                    )
                     .detail(
                         format!("# {}\n\n{}\n\n## Commands\n\n{}", m.name, m.description, cmds_summary),
                         vec![
@@ -291,57 +347,76 @@ pub fn build_settings_home_view_with_first_party(
 
                 let first_cmd = m.commands.first().map(|c| c.id.clone()).unwrap_or_default();
 
-                let mut actions = ActionPanelBuilder::new().section(
-                    Some("Plugin"),
-                    vec![
-                        ActionItem::new(
-                            format!("settings.plugin-caps:{}", m.id),
-                            "Manage Capability Approvals",
-                        )
-                        .shortcut("Enter"),
+                let is_disabled = disabled_plugins.contains(&m.id);
+                let toggle_label = if is_disabled {
+                    "Enable Plugin"
+                } else {
+                    "Disable Plugin"
+                };
+
+                let mut plugin_actions = vec![
+                    ActionItem::new(
+                        format!("settings.plugin-caps:{}", m.id),
+                        "Manage Capability Approvals",
+                    )
+                    .shortcut("Enter"),
+                ];
+                if !m.preferences.is_empty() {
+                    plugin_actions.push(
                         ActionItem::new(
                             format!("settings.plugin-prefs:{}", m.id),
                             "Configure Preferences",
                         )
                         .shortcut("Ctrl+Enter"),
-                        ActionItem::new(
-                            format!("plugin.run:{}:{}", m.id, first_cmd),
-                            "Launch Primary Command",
-                        ),
-                        ActionItem::new(format!("plugin.reload:{}", m.id), "Reload WASM Bundle"),
+                    );
+                }
+                if !first_cmd.is_empty() && !is_disabled {
+                    let mut launch = ActionItem::new(
+                        format!("plugin.run:{}:{}", m.id, first_cmd),
+                        "Launch Primary Command",
+                    );
+                    if m.preferences.is_empty() {
+                        launch = launch.shortcut("Ctrl+Enter");
+                    }
+                    plugin_actions.push(launch);
+                }
+                plugin_actions.push(ActionItem::new(
+                    format!("settings.plugin-toggle:{}", m.id),
+                    toggle_label,
+                ));
+                plugin_actions.push(ActionItem::new(
+                    format!("plugin.reload:{}", m.id),
+                    "Reload WASM Bundle",
+                ));
+                if plugin.origin == PluginOrigin::UserInstalled {
+                    plugin_actions.push(
                         ActionItem::new(
                             format!("settings.plugin-uninstall-prompt:{}", m.id),
                             "Uninstall Plugin",
                         )
                         .destructive(),
-                    ],
-                );
-                if m.preferences.is_empty() {
-                    actions = ActionPanelBuilder::new().section(
-                        Some("Plugin"),
-                        vec![
-                            ActionItem::new(
-                                format!("settings.plugin-caps:{}", m.id),
-                                "Manage Capability Approvals",
-                            )
-                            .shortcut("Enter"),
-                            ActionItem::new(
-                                format!("plugin.run:{}:{}", m.id, first_cmd),
-                                "Launch Primary Command",
-                            )
-                            .shortcut("Ctrl+Enter"),
-                            ActionItem::new(
-                                format!("plugin.reload:{}", m.id),
-                                "Reload WASM Bundle",
-                            ),
-                            ActionItem::new(
-                                format!("settings.plugin-uninstall-prompt:{}", m.id),
-                                "Uninstall Plugin",
-                            )
-                            .destructive(),
-                        ],
                     );
                 }
+                let actions = ActionPanelBuilder::new().section(Some("Plugin"), plugin_actions);
+
+                let status_label = if is_disabled {
+                    "Disabled".to_string()
+                } else if declared_caps.is_empty() {
+                    plugin.origin.badge_label().to_string()
+                } else {
+                    format!(
+                        "{} · {approved_count}/{} caps",
+                        plugin.origin.badge_label(),
+                        declared_caps.len()
+                    )
+                };
+                let status_tone = if is_disabled {
+                    SemanticTone::Neutral
+                } else if approved_count == declared_caps.len() {
+                    SemanticTone::Success
+                } else {
+                    SemanticTone::Warning
+                };
 
                 let mut item = ListItemBuilder::new(format!("ext:{}", m.id), m.name.clone())
                     .subtitle(format!("v{} · {}", m.version, m.id))
@@ -350,14 +425,7 @@ pub fn build_settings_home_view_with_first_party(
                     .keyword("plugin")
                     .keyword("wasm")
                     .keyword(m.id.clone())
-                    .accessory_tag(
-                        format!("{approved_count}/{} caps", declared_caps.len()),
-                        if approved_count == declared_caps.len() {
-                            SemanticTone::Success
-                        } else {
-                            SemanticTone::Warning
-                        },
-                    )
+                    .accessory_tag(status_label, status_tone)
                     .detail(
                         format!(
                             "# {}\n\n{}\n\n## Commands\n\n{}\n\n## Capabilities\n\n{}",
@@ -404,8 +472,8 @@ pub fn build_settings_home_view_with_first_party(
             .collect();
 
         builder = builder.section(
-            Some("Installed WASM Plugins"),
-            Some(&format!("{} installed", plugins.len())),
+            Some("External WASM Plugins"),
+            Some(&format!("{} available", plugins.len())),
             plugin_items,
         );
     }
@@ -414,11 +482,272 @@ pub fn build_settings_home_view_with_first_party(
         .empty_view(EmptyView {
             title: "No matching settings or plugins".to_string(),
             description: Some(
-                "Press Esc to clear the filter or install a local WASM plugin.".to_string(),
+                "Press Esc to clear the filter, browse the Plugin Store, or install a local WASM plugin."
+                    .to_string(),
             ),
             icon: Some("0".to_string()),
             actions: ActionPanel::from_actions(vec![
                 ActionItem::new("search.clear", "Clear Search").shortcut("Enter"),
+                ActionItem::new("settings.open-store", "Open Plugin Store"),
+            ]),
+        })
+        .build()
+}
+
+/// Builds the AIOS Plugin Store `List + Split Detail` view backed by cached/live `index.json`.
+#[must_use]
+pub fn build_plugin_store_view(
+    index: Option<&PluginRegistryIndex>,
+    installed: &[InstalledPlugin],
+    disabled_plugins: &HashSet<String>,
+) -> ViewNode {
+    let installed_map: HashMap<&str, &InstalledPlugin> = installed
+        .iter()
+        .map(|p| (p.manifest.id.as_str(), p))
+        .collect();
+
+    let mut builder = ListViewBuilder::new("AIOS Plugin Store")
+        .placeholder("Search community & official WASM plugins...")
+        .showing_detail(true)
+        .filter_dropdown(
+            "Filter Store",
+            "all",
+            vec![
+                FilterOption {
+                    id: "all".to_string(),
+                    title: "All Plugins".to_string(),
+                },
+                FilterOption {
+                    id: "updates".to_string(),
+                    title: "Updates Available".to_string(),
+                },
+                FilterOption {
+                    id: "installed".to_string(),
+                    title: "Installed".to_string(),
+                },
+                FilterOption {
+                    id: "productivity".to_string(),
+                    title: "Productivity".to_string(),
+                },
+                FilterOption {
+                    id: "developer-tools".to_string(),
+                    title: "Developer Tools".to_string(),
+                },
+                FilterOption {
+                    id: "utilities".to_string(),
+                    title: "Utilities".to_string(),
+                },
+            ],
+        );
+
+    if let Some(idx) = index
+        && !idx.plugins.is_empty()
+    {
+        let mut update_items = Vec::new();
+        let mut catalog_items = Vec::new();
+
+        for entry in &idx.plugins {
+            let local = installed_map.get(entry.id.as_str()).copied();
+            let is_disabled = disabled_plugins.contains(&entry.id);
+            let has_update =
+                local.is_some_and(|p| is_newer_version(&p.manifest.version, &entry.latest.version));
+
+            let (tag_label, tag_tone, filter_group) = if has_update {
+                (
+                    format!("Update v{}", entry.latest.version),
+                    SemanticTone::Warning,
+                    "updates",
+                )
+            } else if let Some(loc) = local {
+                if is_disabled {
+                    ("Disabled".to_string(), SemanticTone::Neutral, "installed")
+                } else {
+                    (
+                        format!("{} v{}", loc.origin.badge_label(), loc.manifest.version),
+                        SemanticTone::Success,
+                        "installed",
+                    )
+                }
+            } else {
+                (
+                    format!("v{}", entry.latest.version),
+                    SemanticTone::Neutral,
+                    match entry.category.as_str() {
+                        "productivity" => "productivity",
+                        "developer-tools" => "developer-tools",
+                        _ => "utilities",
+                    },
+                )
+            };
+
+            let caps_md = if entry.capabilities.is_empty() {
+                "Zero privileged capabilities required (pure sandbox).".to_string()
+            } else {
+                entry
+                    .capabilities
+                    .iter()
+                    .map(|c| format!("- `{c}`"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let sha_preview: String = entry.latest.sha256.chars().take(16).collect();
+            let detail_md = format!(
+                "# {}\n\n{}\n\n## Capabilities\n\n{}\n\n## Release\n\n- Version: `{}`\n- SHA-256: `{}...`\n- Download: `{}`",
+                entry.name,
+                entry.description,
+                caps_md,
+                entry.latest.version,
+                sha_preview,
+                entry.latest.download_url
+            );
+
+            let mut metadata = vec![
+                MetadataEntry::Label {
+                    title: "Plugin ID".to_string(),
+                    text: entry.id.clone(),
+                },
+                MetadataEntry::Label {
+                    title: "Author".to_string(),
+                    text: entry.author.clone(),
+                },
+                MetadataEntry::Label {
+                    title: "Latest".to_string(),
+                    text: format!("v{}", entry.latest.version),
+                },
+            ];
+            if let Some(loc) = local {
+                metadata.push(MetadataEntry::Label {
+                    title: "Local".to_string(),
+                    text: format!("v{} ({})", loc.manifest.version, loc.origin.badge_label()),
+                });
+            }
+            if !entry.repository.is_empty() {
+                metadata.push(MetadataEntry::Link {
+                    title: "Repository".to_string(),
+                    text: entry.repository.clone(),
+                    target: entry.repository.clone(),
+                });
+            }
+
+            let mut primary_actions = Vec::new();
+            if has_update {
+                primary_actions.push(
+                    ActionItem::new(
+                        format!("store.update:{}", entry.id),
+                        format!("Update to v{}", entry.latest.version),
+                    )
+                    .shortcut("Enter"),
+                );
+            } else if let Some(loc) = local {
+                if is_disabled {
+                    primary_actions.push(
+                        ActionItem::new(format!("settings.plugin-toggle:{}", entry.id), "Enable Plugin")
+                            .shortcut("Enter"),
+                    );
+                } else if let Some(cmd) = loc.manifest.commands.first() {
+                    primary_actions.push(
+                        ActionItem::new(
+                            format!("plugin.run:{}:{}", entry.id, cmd.id),
+                            format!("Open {}", cmd.title),
+                        )
+                        .shortcut("Enter"),
+                    );
+                }
+                primary_actions.push(ActionItem::new(
+                    format!("store.install:{}", entry.id),
+                    "Reinstall from Store",
+                ));
+            } else {
+                primary_actions.push(
+                    ActionItem::new(
+                        format!("store.install:{}", entry.id),
+                        format!("Install v{}", entry.latest.version),
+                    )
+                    .shortcut("Enter"),
+                );
+            }
+            primary_actions.push(
+                ActionItem::new("store.refresh", "Refresh Store Index").shortcut("Ctrl+Enter"),
+            );
+
+            let mut panel = ActionPanelBuilder::new().section(Some("Store"), primary_actions);
+            if let Some(loc) = local {
+                let mut manage = vec![ActionItem::new(
+                    format!("settings.plugin-toggle:{}", entry.id),
+                    if is_disabled {
+                        "Enable Plugin"
+                    } else {
+                        "Disable Plugin"
+                    },
+                )];
+                if loc.origin == PluginOrigin::UserInstalled {
+                    manage.push(
+                        ActionItem::new(
+                            format!("settings.plugin-uninstall-prompt:{}", entry.id),
+                            "Uninstall Plugin",
+                        )
+                        .destructive(),
+                    );
+                }
+                panel = panel.section(Some("Manage"), manage);
+            }
+
+            let mut item_builder = ListItemBuilder::new(format!("store:{}", entry.id), entry.name.clone())
+                .subtitle(format!("{} · {}", entry.author, entry.description))
+                .icon(
+                    entry
+                        .name
+                        .chars()
+                        .take(2)
+                        .collect::<String>()
+                        .to_uppercase(),
+                )
+                .filter_group(filter_group)
+                .keyword(entry.id.clone())
+                .keyword(entry.author.clone())
+                .keyword(entry.category.clone())
+                .accessory_tag(tag_label, tag_tone)
+                .detail(detail_md, metadata)
+                .actions(panel.build());
+            for tag in &entry.tags {
+                item_builder = item_builder.keyword(tag.clone());
+            }
+            if let Some(loc) = local
+                && let Some(icon_path) = &loc.icon_path
+            {
+                item_builder = item_builder.icon_path(icon_path.display().to_string());
+            }
+
+            let built = item_builder.build();
+            if has_update {
+                update_items.push(built);
+            } else {
+                catalog_items.push(built);
+            }
+        }
+
+        if !update_items.is_empty() {
+            let count = format!("{} available", update_items.len());
+            builder = builder.section(Some("Updates Available"), Some(&count), update_items);
+        }
+        if !catalog_items.is_empty() {
+            let count = format!("{} plugins", catalog_items.len());
+            builder = builder.section(Some("Plugin Catalog"), Some(&count), catalog_items);
+        }
+    }
+
+    builder
+        .empty_view(EmptyView {
+            title: "Plugin Store Index Not Loaded".to_string(),
+            description: Some(
+                "Press Enter to fetch the latest registry index.json, or install a plugin locally with `aios plugin install`."
+                    .to_string(),
+            ),
+            icon: Some("ST".to_string()),
+            actions: ActionPanel::from_actions(vec![
+                ActionItem::new("store.refresh", "Refresh Store Index").shortcut("Enter"),
+                ActionItem::new("settings.install-plugin-form", "Install Local Plugin..."),
+                ActionItem::new("nav.pop", "Back").shortcut("Esc"),
             ]),
         })
         .build()

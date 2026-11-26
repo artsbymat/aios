@@ -1,5 +1,6 @@
 //! Manifest loader, plugin directory scanner, and local plugin installer/uninstaller.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +9,38 @@ use aios_plugin_sdk::{PluginManifest, PluginManifestFile};
 
 pub const MANIFEST_FILE_NAME: &str = "aios-plugin.toml";
 
+/// Provenance layer of a discovered external WASM plugin bundle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PluginOrigin {
+    /// Shipped default plugin loaded from a system/bundled directory.
+    Bundled,
+    /// User-installed or Store-upgraded plugin in `$XDG_DATA_HOME/aios/plugins/`.
+    #[default]
+    UserInstalled,
+    /// Live local development plugin attached via `aios plugin dev`.
+    Dev,
+}
+
+impl PluginOrigin {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bundled => "bundled",
+            Self::UserInstalled => "user",
+            Self::Dev => "dev",
+        }
+    }
+
+    #[must_use]
+    pub const fn badge_label(self) -> &'static str {
+        match self {
+            Self::Bundled => "Bundled",
+            Self::UserInstalled => "Installed",
+            Self::Dev => "Dev",
+        }
+    }
+}
+
 /// One installed external WASM plugin bundle discovered on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledPlugin {
@@ -15,6 +48,7 @@ pub struct InstalledPlugin {
     pub root_dir: PathBuf,
     pub wasm_path: PathBuf,
     pub icon_path: Option<PathBuf>,
+    pub origin: PluginOrigin,
 }
 
 impl InstalledPlugin {
@@ -57,6 +91,7 @@ pub fn load_plugin_from_dir(dir: &Path) -> Result<InstalledPlugin> {
         root_dir: dir.to_path_buf(),
         wasm_path,
         icon_path,
+        origin: PluginOrigin::UserInstalled,
     })
 }
 
@@ -64,6 +99,33 @@ pub fn load_plugin_from_dir(dir: &Path) -> Result<InstalledPlugin> {
 /// Invalid bundles are logged and skipped so one broken directory never prevents AIOS from starting.
 #[must_use]
 pub fn discover_plugins(plugins_dir: &Path) -> Vec<InstalledPlugin> {
+    discover_plugins_with_origin(plugins_dir, PluginOrigin::UserInstalled)
+}
+
+/// Two-layer discovery: loads shipped bundled plugins from `bundled_dirs` first, then overlays
+/// user-installed plugins from `user_plugins_dir` so user upgrades cleanly shadow bundled defaults.
+#[must_use]
+pub fn discover_layered_plugins(
+    bundled_dirs: &[PathBuf],
+    user_plugins_dir: &Path,
+) -> Vec<InstalledPlugin> {
+    let mut by_id: BTreeMap<String, InstalledPlugin> = BTreeMap::new();
+    for dir in bundled_dirs {
+        for plugin in discover_plugins_with_origin(dir, PluginOrigin::Bundled) {
+            by_id.entry(plugin.manifest.id.clone()).or_insert(plugin);
+        }
+    }
+    for plugin in discover_plugins_with_origin(user_plugins_dir, PluginOrigin::UserInstalled) {
+        // User-installed / Store-upgraded bundles always shadow bundled defaults.
+        by_id.insert(plugin.manifest.id.clone(), plugin);
+    }
+    by_id.into_values().collect()
+}
+
+fn discover_plugins_with_origin(
+    plugins_dir: &Path,
+    origin: PluginOrigin,
+) -> Vec<InstalledPlugin> {
     let Ok(entries) = fs::read_dir(plugins_dir) else {
         return Vec::new();
     };
@@ -77,7 +139,10 @@ pub fn discover_plugins(plugins_dir: &Path) -> Vec<InstalledPlugin> {
             continue;
         }
         match load_plugin_from_dir(&path) {
-            Ok(plugin) => plugins.push(plugin),
+            Ok(mut plugin) => {
+                plugin.origin = origin;
+                plugins.push(plugin);
+            }
             Err(err) => {
                 tracing::warn!(
                     dir = %path.display(),

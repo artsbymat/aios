@@ -980,6 +980,22 @@ fn build_corpus(
             ],
         ),
         (
+            "core:store",
+            "Plugin Store",
+            "Discover, install, and update external WASM plugins from registries",
+            "PS",
+            "core.open-store",
+            vec![
+                "store",
+                "plugins",
+                "registry",
+                "download",
+                "install",
+                "extensions",
+                "marketplace",
+            ],
+        ),
+        (
             "core:scripts",
             "Script Commands",
             "Browse, run, and reload local scripts in ~/.config/aios/scripts",

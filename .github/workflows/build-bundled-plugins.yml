@@ -1,0 +1,39 @@
+name: Build Shipped External WASM Plugins
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  build-wasm-plugins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - name: Build and pack bundled plugins
+        run: |
+          mkdir -p dist/plugins dist/releases
+          for dir in plugins/*; do
+            [ -f "$dir/Cargo.toml" ] || continue
+            id=$(basename "$dir")
+            cargo build --manifest-path "$dir/Cargo.toml" --target wasm32-wasip2 --release
+            wasm=$(find "$dir/target/wasm32-wasip2/release" -maxdepth 1 -name "*.wasm" | head -n1)
+            cp "$wasm" "$dir/plugin.wasm"
+            mkdir -p "dist/plugins/$id"
+            cp "$dir/aios-plugin.toml" "$dir/plugin.wasm" "$dir/icon.svg" "dist/plugins/$id/"
+            [ -d "$dir/icons" ] && cp -r "$dir/icons" "dist/plugins/$id/"
+            version=$(grep -m1 '^version' "$dir/aios-plugin.toml" | cut -d'"' -f2)
+            archive="$id-v$version.aios-plugin"
+            tar -czf "dist/releases/$archive" -C "dist/plugins/$id" .
+            (cd dist/releases && sha256sum "$archive" >> SHA256SUMS)
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aios-bundled-plugins
+          path: |
+            dist/plugins/
+            dist/releases/
