@@ -740,7 +740,14 @@ impl Render for DmenuWindow {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .child(div().w(px(1.5)).h(px(18.0)).mr(px(2.0)).bg(c.accent_solid))
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .w(px(1.5))
+                                    .h(px(18.0))
+                                    .mr(px(2.0))
+                                    .bg(c.accent_solid),
+                            )
                             .child(
                                 div()
                                     .text_color(c.text_muted)
@@ -754,14 +761,19 @@ impl Render for DmenuWindow {
                             .flex()
                             .flex_row()
                             .items_center()
+                            .text_color(c.text_primary)
+                            .text_size(px(16.0))
+                            .line_height(px(22.0))
+                            .whitespace_nowrap()
+                            .child(self.state.query.clone())
                             .child(
                                 div()
-                                    .text_color(c.text_primary)
-                                    .text_size(px(16.0))
-                                    .line_height(px(22.0))
-                                    .child(self.state.query.clone()),
+                                    .flex_shrink_0()
+                                    .w(px(1.5))
+                                    .h(px(18.0))
+                                    .ml(px(1.0))
+                                    .bg(c.accent_solid),
                             )
-                            .child(div().w(px(1.5)).h(px(18.0)).ml(px(1.0)).bg(c.accent_solid))
                     }),
             )
             .child(

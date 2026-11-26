@@ -998,6 +998,7 @@ impl LauncherWindow {
             .flex_row()
             .items_center()
             .gap(px(8.0))
+            .overflow_hidden()
             .cursor_text()
             .on_click(cx.listener(|this, _, _, cx| {
                 this.state.current_mut().header_focus = HeaderFocus::Search;
@@ -1011,13 +1012,21 @@ impl LauncherWindow {
                     .flex_row()
                     .items_center()
                     .when(search_focused, |d| {
-                        d.child(div().w(px(2.0)).h(px(18.0)).mr(px(2.0)).bg(c.accent_solid))
+                        d.child(
+                            div()
+                                .flex_shrink_0()
+                                .w(px(2.0))
+                                .h(px(18.0))
+                                .mr(px(2.0))
+                                .bg(c.accent_solid),
+                        )
                     })
                     .child(
                         div()
                             .text_color(c.text_muted)
                             .text_size(px(16.0))
                             .line_height(px(24.0))
+                            .whitespace_nowrap()
                             .child(placeholder.to_owned()),
                     ),
             );
@@ -1030,9 +1039,17 @@ impl LauncherWindow {
                     .text_color(c.text_primary)
                     .text_size(px(16.0))
                     .line_height(px(24.0))
+                    .whitespace_nowrap()
                     .child(frame.search_query.clone())
                     .when(search_focused, |d| {
-                        d.child(div().w(px(2.0)).h(px(18.0)).ml(px(1.0)).bg(c.accent_solid))
+                        d.child(
+                            div()
+                                .flex_shrink_0()
+                                .w(px(2.0))
+                                .h(px(18.0))
+                                .ml(px(1.0))
+                                .bg(c.accent_solid),
+                        )
                     }),
             );
         }
@@ -1077,6 +1094,7 @@ impl LauncherWindow {
                     }))
                     .font_family(theme.font_mono)
                     .text_size(px(11.5))
+                    .whitespace_nowrap()
                     .text_color(if val.is_empty() {
                         c.text_muted
                     } else {
@@ -1350,15 +1368,21 @@ impl LauncherWindow {
                     .flex()
                     .flex_row()
                     .items_center()
+                    .overflow_hidden()
                     .child(if filter_query.is_empty() {
                         div()
                             .text_color(c.text_muted)
                             .text_size(px(12.0))
+                            .whitespace_nowrap()
                             .child("Filter actions...")
                     } else {
                         div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
                             .text_color(c.text_primary)
                             .text_size(px(12.0))
+                            .whitespace_nowrap()
                             .child(filter_query.clone())
                     });
 
