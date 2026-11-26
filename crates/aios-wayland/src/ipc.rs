@@ -403,7 +403,7 @@ fn handle_connection(mut stream: UnixStream, tx: &async_channel::Sender<IpcEnvel
             let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
 
             let dmenu_stream_rx = if is_streaming {
-                let (stream_tx, stream_rx) = async_channel::bounded::<DmenuStreamMessage>(64);
+                let (stream_tx, stream_rx) = async_channel::bounded::<DmenuStreamMessage>(16);
                 let _ = reader.get_ref().set_read_timeout(None);
                 let _ = thread::Builder::new()
                     .name("aios-ipc-dmenu-stream".into())
@@ -458,6 +458,7 @@ fn handle_connection(mut stream: UnixStream, tx: &async_channel::Sender<IpcEnvel
                     .spawn(move || {
                         let response = reply_rx.recv().unwrap_or(DaemonIpcResponse::DmenuCancelled);
                         write_ipc_response(&mut stream, &response);
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
                     });
                 return;
             }

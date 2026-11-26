@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 
+use crate::corpus::PackedTextSnapshot;
 use crate::frecency::{FrecencyConfig, FrecencyRecord, score_item};
 use crate::query::QueryParser;
 use crate::{CaseMatching, MatchEngine, MatchResult, SearchItem};
@@ -671,6 +672,386 @@ fn coordinator_loop<T: SearchItem + 'static>(
 
             if job.tx.send(snapshot).is_err() {
                 // UI dropped the receiver; stop background scoring immediately.
+                break;
+            }
+        }
+    }
+}
+
+struct StrSearchItem<'a>(&'a str);
+
+impl SearchItem for StrSearchItem<'_> {
+    #[inline]
+    fn id(&self) -> &str {
+        self.0
+    }
+
+    #[inline]
+    fn primary_text(&self) -> &str {
+        self.0
+    }
+}
+
+fn score_packed_range_parallel(
+    corpus: &PackedTextSnapshot,
+    range: std::ops::Range<usize>,
+    ctx: &EvalContext<'_>,
+) -> Option<(TopKCollector, usize)> {
+    let range_len = range.end.saturating_sub(range.start);
+    if range_len == 0 {
+        return Some((TopKCollector::new(ctx.config.limit), 0));
+    }
+
+    let chunk_size = ctx.config.rayon_chunk_size.max(64);
+    let check_every = ctx.config.cancel_check_interval.max(32);
+    let chunk_count = range_len.div_ceil(chunk_size);
+    let range_start = range.start;
+    let range_end = range.end;
+
+    let reduced = (0..chunk_count)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            if ctx.cancel.is_some_and(CancellationToken::is_cancelled) {
+                return None;
+            }
+            let base_idx = range_start + chunk_idx * chunk_size;
+            let end_idx = (base_idx + chunk_size).min(range_end);
+            let mut local = TopKCollector::new(ctx.config.limit);
+            let mut matched_count = 0usize;
+            let has_frecency = !ctx.frecency.is_empty();
+
+            for (offset, idx) in (base_idx..end_idx).enumerate() {
+                if offset.is_multiple_of(check_every)
+                    && ctx.cancel.is_some_and(CancellationToken::is_cancelled)
+                {
+                    return None;
+                }
+                let Some(text) = corpus.get(idx) else {
+                    continue;
+                };
+                let item = StrSearchItem(text);
+                let rec = if has_frecency {
+                    ctx.frecency.get(text)
+                } else {
+                    None
+                };
+                if let Some(res) = score_item(
+                    &item,
+                    ctx.query,
+                    ctx.engine,
+                    rec,
+                    ctx.now_secs,
+                    &ctx.config.frecency,
+                ) {
+                    matched_count += 1;
+                    local.push(&item, idx, res);
+                }
+            }
+
+            Some((local, matched_count))
+        })
+        .reduce(
+            || Some((TopKCollector::new(ctx.config.limit), 0usize)),
+            |acc, next| match (acc, next) {
+                (Some((mut left_k, left_n)), Some((right_k, right_n))) => {
+                    left_k.merge_from(right_k);
+                    Some((left_k, left_n + right_n))
+                }
+                _ => None,
+            },
+        );
+
+    if ctx.cancel.is_some_and(CancellationToken::is_cancelled) {
+        return None;
+    }
+
+    reduced
+}
+
+/// Runs a full synchronous parallel search directly over a [`PackedTextSnapshot`] with zero
+/// per-item string allocation.
+#[must_use]
+pub fn search_packed_parallel(
+    corpus: &PackedTextSnapshot,
+    query: &str,
+    frecency: &FrecencyMap,
+    now_secs: i64,
+    config: &SearchConfig,
+    cancel: Option<&CancellationToken>,
+) -> Option<SearchSnapshot> {
+    let engine = QueryParser::parse(query, config.case_matching);
+    let generation = cancel.map_or(0, CancellationToken::generation);
+    let ctx = EvalContext {
+        query,
+        engine: engine.as_ref(),
+        frecency,
+        now_secs,
+        config,
+        cancel,
+    };
+    let (collector, total_matched) = score_packed_range_parallel(corpus, 0..corpus.len(), &ctx)?;
+
+    Some(SearchSnapshot {
+        generation,
+        matches: collector.into_sorted(),
+        total_matched,
+        processed_items: corpus.len(),
+        total_items: corpus.len(),
+        is_complete: true,
+    })
+}
+
+struct PendingPackedJob {
+    generation: u64,
+    corpus: PackedTextSnapshot,
+    start_index: usize,
+    query: String,
+    engine: Arc<dyn MatchEngine>,
+    frecency: Arc<FrecencyMap>,
+    now_secs: i64,
+    config: SearchConfig,
+    running_collector: TopKCollector,
+    running_matched: usize,
+    tx: mpsc::Sender<SearchSnapshot>,
+}
+
+struct SharedPackedState {
+    latest_job: Option<PendingPackedJob>,
+    shutdown: bool,
+}
+
+/// Adaptive parallel search session operating directly on zero-copy [`PackedTextSnapshot`] slabs.
+pub struct PackedSearchSession {
+    config: SearchConfig,
+    generation: Arc<AtomicU64>,
+    shared: Arc<(Mutex<SharedPackedState>, Condvar)>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for PackedSearchSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PackedSearchSession")
+            .field("config", &self.config)
+            .field("generation", &self.generation.load(AtomicOrdering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+impl PackedSearchSession {
+    #[must_use]
+    pub fn new(config: SearchConfig) -> Self {
+        let generation = Arc::new(AtomicU64::new(0));
+        let shared = Arc::new((
+            Mutex::new(SharedPackedState {
+                latest_job: None,
+                shutdown: false,
+            }),
+            Condvar::new(),
+        ));
+
+        let gen_clone = Arc::clone(&generation);
+        let shared_clone = Arc::clone(&shared);
+        let worker = thread::Builder::new()
+            .name("aios-fuzzy-packed-coord".into())
+            .spawn(move || packed_coordinator_loop(gen_clone, shared_clone))
+            .expect("failed to spawn aios-fuzzy packed coordinator thread");
+
+        Self {
+            config,
+            generation,
+            shared,
+            worker: Some(worker),
+        }
+    }
+
+    pub fn cancel_active(&self) {
+        self.generation.fetch_add(1, AtomicOrdering::AcqRel);
+        if let Ok(mut guard) = self.shared.0.lock() {
+            guard.latest_job = None;
+        }
+    }
+
+    #[must_use]
+    pub fn search(
+        &self,
+        corpus: PackedTextSnapshot,
+        query: impl Into<String>,
+        frecency: Arc<FrecencyMap>,
+        now_secs: i64,
+    ) -> SearchHandle {
+        let query = query.into();
+        let generation = self.generation.fetch_add(1, AtomicOrdering::AcqRel) + 1;
+        let engine: Arc<dyn MatchEngine> =
+            Arc::from(QueryParser::parse(&query, self.config.case_matching));
+        let total_items = corpus.len();
+
+        let mut collector = TopKCollector::new(self.config.limit);
+        let mut matched_count = 0usize;
+        let mut processed = 0usize;
+
+        let inline_start = Instant::now();
+        let force_inline_all = total_items <= self.config.inline_max_items;
+        let has_frecency = !frecency.is_empty();
+        const TIME_CHECK_STRIDE: usize = 64;
+
+        while processed < total_items {
+            if let Some(text) = corpus.get(processed) {
+                let item = StrSearchItem(text);
+                let rec = if has_frecency {
+                    frecency.get(text)
+                } else {
+                    None
+                };
+                if let Some(res) = score_item(
+                    &item,
+                    &query,
+                    engine.as_ref(),
+                    rec,
+                    now_secs,
+                    &self.config.frecency,
+                ) {
+                    matched_count += 1;
+                    collector.push(&item, processed, res);
+                }
+            }
+            processed += 1;
+
+            if !force_inline_all
+                && processed.is_multiple_of(TIME_CHECK_STRIDE)
+                && inline_start.elapsed() >= self.config.inline_budget
+            {
+                break;
+            }
+        }
+
+        if processed >= total_items {
+            let snapshot = SearchSnapshot {
+                generation,
+                matches: collector.into_sorted(),
+                total_matched: matched_count,
+                processed_items: total_items,
+                total_items,
+                is_complete: true,
+            };
+            return SearchHandle {
+                initial: snapshot,
+                updates: None,
+            };
+        }
+
+        let initial = SearchSnapshot {
+            generation,
+            matches: collector.snapshot_sorted(),
+            total_matched: matched_count,
+            processed_items: processed,
+            total_items,
+            is_complete: false,
+        };
+
+        let (tx, rx) = mpsc::channel();
+        let job = PendingPackedJob {
+            generation,
+            corpus,
+            start_index: processed,
+            query,
+            engine,
+            frecency,
+            now_secs,
+            config: self.config.clone(),
+            running_collector: collector,
+            running_matched: matched_count,
+            tx,
+        };
+
+        if let Ok(mut guard) = self.shared.0.lock() {
+            guard.latest_job = Some(job);
+            self.shared.1.notify_one();
+        }
+
+        SearchHandle {
+            initial,
+            updates: Some(rx),
+        }
+    }
+}
+
+impl Drop for PackedSearchSession {
+    fn drop(&mut self) {
+        self.generation.fetch_add(1, AtomicOrdering::AcqRel);
+        if let Ok(mut guard) = self.shared.0.lock() {
+            guard.shutdown = true;
+            guard.latest_job = None;
+            self.shared.1.notify_all();
+        }
+        if let Some(handle) = self.worker.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn packed_coordinator_loop(
+    generation_counter: Arc<AtomicU64>,
+    shared: Arc<(Mutex<SharedPackedState>, Condvar)>,
+) {
+    loop {
+        let mut job = {
+            let Ok(mut guard) = shared.0.lock() else {
+                return;
+            };
+            while guard.latest_job.is_none() && !guard.shutdown {
+                guard = match shared.1.wait(guard) {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+            }
+            if guard.shutdown {
+                return;
+            }
+            match guard.latest_job.take() {
+                Some(j) => j,
+                None => continue,
+            }
+        };
+
+        let token = CancellationToken::new(Arc::clone(&generation_counter), job.generation);
+        let total_items = job.corpus.len();
+        let batch_size = job.config.macro_batch_size.max(512);
+        let mut cursor = job.start_index;
+
+        while cursor < total_items {
+            if token.is_cancelled() {
+                break;
+            }
+            let batch_end = (cursor + batch_size).min(total_items);
+            let ctx = EvalContext {
+                query: &job.query,
+                engine: job.engine.as_ref(),
+                frecency: &job.frecency,
+                now_secs: job.now_secs,
+                config: &job.config,
+                cancel: Some(&token),
+            };
+            let Some((batch_collector, batch_matched)) =
+                score_packed_range_parallel(&job.corpus, cursor..batch_end, &ctx)
+            else {
+                break;
+            };
+
+            job.running_collector.merge_from(batch_collector);
+            job.running_matched += batch_matched;
+            cursor = batch_end;
+
+            let is_complete = cursor >= total_items;
+            let snapshot = SearchSnapshot {
+                generation: job.generation,
+                matches: job.running_collector.snapshot_sorted(),
+                total_matched: job.running_matched,
+                processed_items: cursor,
+                total_items,
+                is_complete,
+            };
+
+            if job.tx.send(snapshot).is_err() {
                 break;
             }
         }

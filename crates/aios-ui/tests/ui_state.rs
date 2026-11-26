@@ -283,6 +283,14 @@ fn dmenu_state_filters_preserves_original_index_supports_custom_and_escape() {
     );
     streaming.finish_loading();
     assert!(!streaming.is_loading);
+    assert_eq!(streaming.visible_len(), 1);
+    assert_eq!(streaming.entry_at(0).map(|(idx, _)| idx), Some(3));
+
+    // Clearing immediately releases packed items and resets selection/counts.
+    streaming.clear();
+    assert!(streaming.items.is_empty());
+    assert_eq!(streaming.visible_len(), 0);
+    assert_eq!(streaming.total_matched, 0);
 }
 
 #[test]

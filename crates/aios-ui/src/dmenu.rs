@@ -4,6 +4,7 @@
 //! `WindowKind::LayerShell` surface with full Dark/Light/System parity, and returns either
 //! `DmenuOutcome::Selected { value, index }` or `DmenuOutcome::Cancelled`.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -16,14 +17,16 @@ use aios_core::config::{AiosConfig, ThemeMode};
 use aios_core::view::EmptyView;
 use aios_daemon::{DmenuCaseMode, DmenuRequest, DmenuStreamMessage};
 use aios_fuzzy::{
-    CaseMatching, FrecencyConfig, FrecencyMap, MatchResult, QueryParser, SearchConfig, SearchItem,
-    SearchSession, SearchSnapshot, score_item, search_parallel,
+    CaseMatching, FrecencyConfig, FrecencyMap, MatchResult, PackedSearchSession, PackedTextCorpus,
+    PackedTextSnapshot, QueryParser, SearchConfig, SearchItem, SearchSnapshot, score_item,
+    search_packed_parallel,
 };
 use aios_wayland::PortalThemeWatcher;
 use gpui::{
-    App, Bounds, Context, FocusHandle, Focusable, FontWeight, KeyDownEvent, LinuxWindowBackground,
-    QuitMode, Render, ScrollStrategy, Size, UniformListScrollHandle, Window, WindowBounds,
-    WindowHandle, WindowKind, WindowOptions, div,
+    App, Bounds, Context, Entity, FocusHandle, Focusable, FontWeight, KeyDownEvent,
+    LinuxWindowBackground, QuitMode, Render, RetainAllImageCache, ScrollStrategy, Size,
+    UniformListScrollHandle, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, div,
+    image_cache,
     layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions},
     point,
     prelude::*,
@@ -53,12 +56,20 @@ pub struct DmenuFilteredEntry {
 const DMENU_PARALLEL_THRESHOLD: usize = 512;
 const DMENU_TOP_K_LIMIT: usize = 500;
 
-/// Pure, headless-testable state controller for `aios dmenu` with cached multi-core
-/// `aios-fuzzy` parallel filtering and O(batch) incremental streaming support.
+#[derive(Debug, Clone)]
+enum DmenuMatches {
+    /// Empty query: zero-allocation identity mapping `flat_idx -> original_index = flat_idx`.
+    All,
+    /// Active query: ranked matches capped at `DMENU_TOP_K_LIMIT`.
+    Filtered(Vec<DmenuFilteredEntry>),
+}
+
+/// Pure, headless-testable state controller for `aios dmenu` with contiguous mmap-backed
+/// `PackedTextCorpus` storage, zero-allocation empty-query identity mapping, and O(batch) streaming.
 #[derive(Debug, Clone)]
 pub struct DmenuState {
     pub prompt: String,
-    pub items: Vec<String>,
+    pub items: PackedTextCorpus,
     pub item_icons: Vec<Option<String>>,
     pub header_icon: Option<String>,
     pub show_icons: bool,
@@ -69,7 +80,7 @@ pub struct DmenuState {
     pub allow_custom: bool,
     pub return_index: bool,
     pub total_matched: usize,
-    cached_entries: Vec<DmenuFilteredEntry>,
+    matches: DmenuMatches,
 }
 
 struct DmenuItemAdapter<'a> {
@@ -103,9 +114,11 @@ impl DmenuState {
             .filter(|s| !s.is_empty())
             .unwrap_or("Filter...")
             .to_owned();
-        let mut state = Self {
+        let items = PackedTextCorpus::from_iter_strs(&req.items);
+        let total_matched = items.len();
+        Self {
             prompt,
-            items: req.items.clone(),
+            items,
             item_icons: req.item_icons.clone(),
             header_icon: req.icon.clone(),
             show_icons: req.show_icons || req.item_icons.iter().any(Option::is_some),
@@ -115,14 +128,46 @@ impl DmenuState {
             case_mode: req.case_mode,
             allow_custom: req.allow_custom,
             return_index: req.return_index,
-            total_matched: 0,
-            cached_entries: Vec::new(),
-        };
-        state.recompute_filter();
-        state
+            total_matched,
+            matches: DmenuMatches::All,
+        }
     }
 
-    /// Appends a newly arrived stdin batch incrementally without freezing active user typing.
+    /// Consumes a [`DmenuRequest`] by value so initial items are packed once without cloning.
+    #[must_use]
+    pub fn from_request_owned(req: DmenuRequest) -> Self {
+        let prompt = req
+            .prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Filter...")
+            .to_owned();
+        let show_icons = req.show_icons || req.item_icons.iter().any(Option::is_some);
+        let mut items = PackedTextCorpus::from_iter_strs(req.items);
+        if !req.streaming {
+            items.seal_active();
+        }
+        let total_matched = items.len();
+        Self {
+            prompt,
+            items,
+            item_icons: req.item_icons,
+            header_icon: req.icon,
+            show_icons,
+            is_loading: req.streaming,
+            query: String::new(),
+            selected_index: 0,
+            case_mode: req.case_mode,
+            allow_custom: req.allow_custom,
+            return_index: req.return_index,
+            total_matched,
+            matches: DmenuMatches::All,
+        }
+    }
+
+    /// Appends a newly arrived stdin batch incrementally into contiguous slabs and immediately
+    /// drops the incoming `Vec<String>` so thread arenas never accumulate small heap chunks.
     pub fn append_batch(&mut self, new_items: Vec<String>, new_icons: Vec<Option<String>>) {
         if new_items.is_empty() {
             return;
@@ -138,35 +183,31 @@ impl DmenuState {
             padded_icons.resize(new_items.len(), None);
             self.item_icons.extend(padded_icons);
         }
-        self.items.extend(new_items);
+        self.items.extend_strs(new_items);
 
         let trimmed = self.query.trim();
         if trimmed.is_empty() {
-            for original_index in start_idx..self.items.len() {
-                self.cached_entries.push(DmenuFilteredEntry {
-                    original_index,
-                    match_result: MatchResult {
-                        score: 0,
-                        primary_indices: Vec::new(),
-                        secondary_indices: Vec::new(),
-                    },
-                });
-            }
+            self.matches = DmenuMatches::All;
             self.total_matched = self.items.len();
             return;
         }
 
-        let case_mode = match self.case_mode {
-            DmenuCaseMode::Smart => CaseMatching::Smart,
-            DmenuCaseMode::Insensitive => CaseMatching::Ignore,
-            DmenuCaseMode::Sensitive => CaseMatching::Respect,
-        };
+        let case_mode = self.case_matching();
         let engine = QueryParser::parse(trimmed, case_mode);
         let config = FrecencyConfig::default();
 
+        if matches!(self.matches, DmenuMatches::All) {
+            self.matches = DmenuMatches::Filtered(Vec::new());
+        }
+        let DmenuMatches::Filtered(entries) = &mut self.matches else {
+            unreachable!();
+        };
+
         let mut added = false;
-        for (offset, text) in self.items[start_idx..].iter().enumerate() {
-            let original_index = start_idx + offset;
+        for original_index in start_idx..self.items.len() {
+            let Some(text) = self.items.get(original_index) else {
+                continue;
+            };
             let adapter = DmenuItemAdapter {
                 idx: original_index,
                 text,
@@ -175,7 +216,7 @@ impl DmenuState {
                 score_item(&adapter, trimmed, engine.as_ref(), None, 0, &config)
             {
                 self.total_matched += 1;
-                self.cached_entries.push(DmenuFilteredEntry {
+                entries.push(DmenuFilteredEntry {
                     original_index,
                     match_result,
                 });
@@ -183,16 +224,16 @@ impl DmenuState {
             }
         }
         if added {
-            self.cached_entries.sort_unstable_by(|a, b| {
+            entries.sort_unstable_by(|a, b| {
                 b.match_result
                     .score
                     .cmp(&a.match_result.score)
                     .then_with(|| a.original_index.cmp(&b.original_index))
             });
-            if self.cached_entries.len() > DMENU_TOP_K_LIMIT {
-                self.cached_entries.truncate(DMENU_TOP_K_LIMIT);
+            if entries.len() > DMENU_TOP_K_LIMIT {
+                entries.truncate(DMENU_TOP_K_LIMIT);
             }
-            if self.selected_index >= self.cached_entries.len() {
+            if self.selected_index >= entries.len() {
                 self.selected_index = 0;
             }
         }
@@ -200,22 +241,34 @@ impl DmenuState {
 
     pub fn finish_loading(&mut self) {
         self.is_loading = false;
+        self.items.seal_active();
+    }
+
+    /// Immediately releases all packed slabs, icon paths, and match buffers back to the OS.
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.item_icons.clear();
+        self.item_icons.shrink_to_fit();
+        self.matches = DmenuMatches::All;
+        self.total_matched = 0;
+        self.selected_index = 0;
     }
 
     /// Updates query text without running synchronous scoring (used by `DmenuWindow` when
-    /// offloading large-corpus queries to [`SearchSession`] with `<= 1.5ms` UI-thread return).
+    /// offloading large-corpus queries to [`PackedSearchSession`] with `<= 1.2ms` UI-thread return).
     pub fn set_query_deferred(&mut self, next_query: String) {
         self.query = next_query;
         self.selected_index = 0;
         if self.query.trim().is_empty() {
-            self.recompute_filter();
+            self.matches = DmenuMatches::All;
+            self.total_matched = self.items.len();
         }
     }
 
-    /// Applies an inline or progressive [`SearchSnapshot`] produced by [`SearchSession`].
+    /// Applies an inline or progressive [`SearchSnapshot`] produced by [`PackedSearchSession`].
     pub fn apply_search_snapshot(&mut self, snapshot: SearchSnapshot) {
         self.total_matched = snapshot.total_matched;
-        self.cached_entries = snapshot
+        let entries: Vec<DmenuFilteredEntry> = snapshot
             .matches
             .into_iter()
             .map(|ranked| DmenuFilteredEntry {
@@ -223,9 +276,10 @@ impl DmenuState {
                 match_result: ranked.result,
             })
             .collect();
-        if self.selected_index >= self.cached_entries.len() {
+        if self.selected_index >= entries.len() {
             self.selected_index = 0;
         }
+        self.matches = DmenuMatches::Filtered(entries);
     }
 
     /// Returns the `aios_fuzzy::CaseMatching` corresponding to `self.case_mode`.
@@ -238,33 +292,56 @@ impl DmenuState {
         }
     }
 
+    /// Number of rows currently visible in the picker without allocating.
+    #[inline]
     #[must_use]
-    pub fn filtered_entries(&self) -> &[DmenuFilteredEntry] {
-        &self.cached_entries
+    pub fn visible_len(&self) -> usize {
+        match &self.matches {
+            DmenuMatches::All => self.items.len(),
+            DmenuMatches::Filtered(entries) => entries.len(),
+        }
+    }
+
+    /// Resolves `(original_index, highlight_indices)` for `flat_idx` in `O(1)` with zero allocation.
+    #[inline]
+    #[must_use]
+    pub fn entry_at(&self, flat_idx: usize) -> Option<(usize, &[usize])> {
+        match &self.matches {
+            DmenuMatches::All => (flat_idx < self.items.len()).then_some((flat_idx, &[][..])),
+            DmenuMatches::Filtered(entries) => entries
+                .get(flat_idx)
+                .map(|e| (e.original_index, e.match_result.primary_indices.as_slice())),
+        }
+    }
+
+    #[must_use]
+    pub fn filtered_entries(&self) -> Cow<'_, [DmenuFilteredEntry]> {
+        match &self.matches {
+            DmenuMatches::Filtered(entries) => Cow::Borrowed(entries.as_slice()),
+            DmenuMatches::All => Cow::Owned(
+                (0..self.items.len())
+                    .map(|original_index| DmenuFilteredEntry {
+                        original_index,
+                        match_result: MatchResult {
+                            score: 0,
+                            primary_indices: Vec::new(),
+                            secondary_indices: Vec::new(),
+                        },
+                    })
+                    .collect(),
+            ),
+        }
     }
 
     fn recompute_filter(&mut self) {
         let trimmed = self.query.trim();
         if trimmed.is_empty() {
-            self.cached_entries = (0..self.items.len())
-                .map(|original_index| DmenuFilteredEntry {
-                    original_index,
-                    match_result: MatchResult {
-                        score: 0,
-                        primary_indices: Vec::new(),
-                        secondary_indices: Vec::new(),
-                    },
-                })
-                .collect();
+            self.matches = DmenuMatches::All;
             self.total_matched = self.items.len();
             return;
         }
 
-        let case_matching = match self.case_mode {
-            DmenuCaseMode::Smart => CaseMatching::Smart,
-            DmenuCaseMode::Insensitive => CaseMatching::Ignore,
-            DmenuCaseMode::Sensitive => CaseMatching::Respect,
-        };
+        let case_matching = self.case_matching();
 
         if self.items.len() > DMENU_PARALLEL_THRESHOLD {
             let empty_frecency = FrecencyMap::new();
@@ -273,18 +350,11 @@ impl DmenuState {
                 case_matching,
                 ..SearchConfig::default()
             };
+            let snap = self.items.snapshot();
             if let Some(snapshot) =
-                search_parallel(&self.items, trimmed, &empty_frecency, 0, &cfg, None)
+                search_packed_parallel(&snap, trimmed, &empty_frecency, 0, &cfg, None)
             {
-                self.total_matched = snapshot.total_matched;
-                self.cached_entries = snapshot
-                    .matches
-                    .into_iter()
-                    .map(|ranked| DmenuFilteredEntry {
-                        original_index: ranked.item_index,
-                        match_result: ranked.result,
-                    })
-                    .collect();
+                self.apply_search_snapshot(snapshot);
                 return;
             }
         }
@@ -293,7 +363,10 @@ impl DmenuState {
         let config = FrecencyConfig::default();
 
         let mut entries = Vec::new();
-        for (original_index, text) in self.items.iter().enumerate() {
+        for original_index in 0..self.items.len() {
+            let Some(text) = self.items.get(original_index) else {
+                continue;
+            };
             let adapter = DmenuItemAdapter {
                 idx: original_index,
                 text,
@@ -315,11 +388,11 @@ impl DmenuState {
                 .then_with(|| a.original_index.cmp(&b.original_index))
         });
         self.total_matched = entries.len();
-        self.cached_entries = entries;
+        self.matches = DmenuMatches::Filtered(entries);
     }
 
     pub fn move_vertical(&mut self, delta: isize) {
-        let count = self.cached_entries.len();
+        let count = self.visible_len();
         if count == 0 {
             self.selected_index = 0;
             return;
@@ -364,10 +437,12 @@ impl DmenuState {
                 index: None,
             });
         }
-        if let Some(entry) = self.cached_entries.get(self.selected_index) {
+        if let Some((original_index, _)) = self.entry_at(self.selected_index)
+            && let Some(text) = self.items.get(original_index)
+        {
             return Some(DmenuOutcome::Selected {
-                value: self.items[entry.original_index].clone(),
-                index: Some(entry.original_index),
+                value: text.to_owned(),
+                index: Some(original_index),
             });
         }
         if self.allow_custom && !self.query.is_empty() {
@@ -392,11 +467,12 @@ pub struct DmenuWindow {
     icon_resolver: Arc<Mutex<IconResolver>>,
     icon_cache: RefCell<HashMap<String, Option<String>>>,
     warm_icon_paths: RefCell<HashSet<String>>,
+    image_cache: Entity<RetainAllImageCache>,
+    stream_rx: Option<async_channel::Receiver<DmenuStreamMessage>>,
     typing_epoch: u64,
     icons_deferred: bool,
-    search_session: SearchSession<String>,
-    corpus_arc: Option<Arc<[String]>>,
-    corpus_len: usize,
+    search_session: PackedSearchSession,
+    corpus_snapshot: Option<(usize, PackedTextSnapshot)>,
     empty_frecency: Arc<FrecencyMap>,
     active_search_gen: u64,
     is_searching: bool,
@@ -414,6 +490,12 @@ impl std::fmt::Debug for DmenuWindow {
 
 impl Drop for DmenuWindow {
     fn drop(&mut self) {
+        self.search_session.cancel_active();
+        if let Some(rx) = self.stream_rx.take() {
+            rx.close();
+        }
+        self.corpus_snapshot = None;
+        self.state.clear();
         if let Some(cb) = self.responder.take() {
             cb(DmenuOutcome::Cancelled);
         }
@@ -428,7 +510,8 @@ impl Focusable for DmenuWindow {
 
 impl DmenuWindow {
     pub fn new(
-        request: &DmenuRequest,
+        request: DmenuRequest,
+        stream_rx: Option<async_channel::Receiver<DmenuStreamMessage>>,
         icon_resolver: Arc<Mutex<IconResolver>>,
         on_done: impl FnOnce(DmenuOutcome) + 'static,
         window: &mut Window,
@@ -436,7 +519,7 @@ impl DmenuWindow {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        let state = DmenuState::from_request(request);
+        let state = DmenuState::from_request_owned(request);
         let search_cfg = SearchConfig {
             limit: DMENU_TOP_K_LIMIT,
             inline_budget: Duration::from_micros(1_200),
@@ -444,6 +527,7 @@ impl DmenuWindow {
             case_matching: state.case_matching(),
             ..SearchConfig::default()
         };
+        let image_cache = RetainAllImageCache::new(cx);
         Self {
             state,
             focus_handle,
@@ -452,11 +536,12 @@ impl DmenuWindow {
             icon_resolver,
             icon_cache: RefCell::new(HashMap::new()),
             warm_icon_paths: RefCell::new(HashSet::new()),
+            image_cache,
+            stream_rx,
             typing_epoch: 0,
             icons_deferred: false,
-            search_session: SearchSession::new(search_cfg),
-            corpus_arc: None,
-            corpus_len: 0,
+            search_session: PackedSearchSession::new(search_cfg),
+            corpus_snapshot: None,
             empty_frecency: Arc::new(FrecencyMap::new()),
             active_search_gen: 0,
             is_searching: false,
@@ -514,11 +599,15 @@ impl DmenuWindow {
         }
 
         self.state.set_query_deferred(next_query);
-        if self.corpus_arc.is_none() || self.corpus_len != self.state.items.len() {
-            self.corpus_arc = Some(Arc::from(self.state.items.as_slice()));
-            self.corpus_len = self.state.items.len();
-        }
-        let corpus = Arc::clone(self.corpus_arc.as_ref().expect("corpus cached"));
+        let current_len = self.state.items.len();
+        let corpus = match self.corpus_snapshot.as_ref() {
+            Some((len, snap)) if *len == current_len => snap.clone(),
+            _ => {
+                let snap = self.state.items.snapshot();
+                self.corpus_snapshot = Some((current_len, snap.clone()));
+                snap
+            }
+        };
         let handle = self.search_session.search(
             corpus,
             self.state.query.trim().to_owned(),
@@ -596,7 +685,14 @@ impl DmenuWindow {
         resolved
     }
 
-    fn finish(&mut self, outcome: DmenuOutcome, window: &mut Window) {
+    fn finish(&mut self, outcome: DmenuOutcome, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_session.cancel_active();
+        if let Some(rx) = self.stream_rx.take() {
+            rx.close();
+        }
+        self.image_cache.update(cx, |cache, cx| cache.clear(window, cx));
+        self.corpus_snapshot = None;
+        self.state.clear();
         if let Some(cb) = self.responder.take() {
             cb(outcome);
         }
@@ -611,15 +707,13 @@ impl DmenuWindow {
             if !self.state.query.is_empty() {
                 self.trigger_query_search(String::new(), cx);
             } else {
-                self.search_session.cancel_active();
-                self.finish(DmenuOutcome::Cancelled, window);
+                self.finish(DmenuOutcome::Cancelled, window, cx);
             }
             return;
         }
 
         if mods.control && key.eq_ignore_ascii_case("c") {
-            self.search_session.cancel_active();
-            self.finish(DmenuOutcome::Cancelled, window);
+            self.finish(DmenuOutcome::Cancelled, window, cx);
             return;
         }
 
@@ -660,8 +754,7 @@ impl DmenuWindow {
 
         if key == "enter" {
             if let Some(outcome) = self.state.confirm(mods.control) {
-                self.search_session.cancel_active();
-                self.finish(outcome, window);
+                self.finish(outcome, window, cx);
             }
             return;
         }
@@ -685,7 +778,7 @@ impl Render for DmenuWindow {
         let theme = cx.global::<AiosTheme>().clone();
         let c = &theme.colors;
         let total_items = self.state.items.len();
-        let matched_items = self.state.filtered_entries().len();
+        let matched_items = self.state.visible_len();
         let total_matched = self.state.total_matched;
         let is_prompt_only = total_items == 0 && self.state.allow_custom && !self.state.is_loading;
 
@@ -857,18 +950,19 @@ impl Render for DmenuWindow {
                 matched_items,
                 cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
                     let c = &theme_for_rows.colors;
-                    let entries = this.state.filtered_entries();
                     let render_row_icons = this.state.show_icons;
                     let mut rows = Vec::with_capacity(range.len());
 
                     for flat_idx in range {
-                        let Some(entry) = entries.get(flat_idx) else {
+                        let Some((orig_idx, primary_indices)) = this.state.entry_at(flat_idx)
+                        else {
+                            continue;
+                        };
+                        let Some(item_text) = this.state.items.get(orig_idx) else {
                             continue;
                         };
                         let is_selected = flat_idx == this.state.selected_index;
-                        let orig_idx = entry.original_index;
-                        let item_text = &this.state.items[orig_idx];
-                        let row_val = item_text.clone();
+                        let row_val = item_text.to_owned();
 
                         let row_icon_el = if render_row_icons {
                             let spec = this
@@ -947,13 +1041,14 @@ impl Render for DmenuWindow {
                                                 c.bg_hover
                                             })
                                         })
-                                        .on_click(cx.listener(move |this, _, window, _cx| {
+                                        .on_click(cx.listener(move |this, _, window, cx| {
                                             this.finish(
                                                 DmenuOutcome::Selected {
                                                     value: row_val.clone(),
                                                     index: Some(orig_idx),
                                                 },
                                                 window,
+                                                cx,
                                             );
                                         }))
                                         .child(
@@ -979,7 +1074,7 @@ impl Render for DmenuWindow {
                                                 .line_height(px(18.0))
                                                 .child(highlighted_text(
                                                     item_text,
-                                                    &entry.match_result.primary_indices,
+                                                    primary_indices,
                                                     is_selected,
                                                     &theme_for_rows,
                                                 )),
@@ -1094,40 +1189,42 @@ impl Render for DmenuWindow {
                     ),
             );
 
-        div()
-            .id("aios-dmenu-shell")
-            .size_full()
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
-            .flex()
-            .flex_col()
-            .rounded(theme.metrics.radius_window)
-            .bg(c.bg_canvas_root)
-            .border_1()
-            .border_color(c.border_default)
-            .overflow_hidden()
-            .font(theme.sans_font())
-            .text_color(c.text_primary)
-            .child(header)
-            .child(
-                if (self.state.is_loading || self.is_searching) && matched_items > 0 {
-                    loading_progress_bar(
-                        "aios-dmenu-header-loading",
-                        None,
-                        2.0,
-                        false,
-                        &theme,
-                    )
-                } else {
-                    div()
-                        .w_full()
-                        .h(px(1.0))
-                        .bg(c.border_subtle)
-                        .into_any_element()
-                },
-            )
-            .child(body)
-            .child(footer)
+        image_cache(self.image_cache.clone()).size_full().child(
+            div()
+                .id("aios-dmenu-shell")
+                .size_full()
+                .track_focus(&self.focus_handle)
+                .on_key_down(cx.listener(Self::on_key_down))
+                .flex()
+                .flex_col()
+                .rounded(theme.metrics.radius_window)
+                .bg(c.bg_canvas_root)
+                .border_1()
+                .border_color(c.border_default)
+                .overflow_hidden()
+                .font(theme.sans_font())
+                .text_color(c.text_primary)
+                .child(header)
+                .child(
+                    if (self.state.is_loading || self.is_searching) && matched_items > 0 {
+                        loading_progress_bar(
+                            "aios-dmenu-header-loading",
+                            None,
+                            2.0,
+                            false,
+                            &theme,
+                        )
+                    } else {
+                        div()
+                            .w_full()
+                            .h(px(1.0))
+                            .bg(c.border_subtle)
+                            .into_any_element()
+                    },
+                )
+                .child(body)
+                .child(footer),
+        )
     }
 }
 
@@ -1192,17 +1289,25 @@ pub fn open_dmenu_window(
     let cb_fallback = shared_cb;
     let res_primary = Arc::clone(&icon_resolver);
     let res_fallback = icon_resolver;
-    let req_primary = request.clone();
+    let req_cell = Rc::new(RefCell::new(Some(request)));
+    let req_primary = Rc::clone(&req_cell);
+    let req_fallback = req_cell;
+    let rx_primary = stream_rx.clone();
+    let rx_fallback = stream_rx.clone();
 
     let handle = cx
         .open_window(layer_opts, move |window, cx| {
             cx.new(|cx| {
+                let req = req_primary
+                    .borrow_mut()
+                    .take()
+                    .expect("dmenu request available for primary window");
                 let done = move |outcome: DmenuOutcome| {
                     if let Some(cb) = cb_primary.borrow_mut().take() {
                         cb(outcome);
                     }
                 };
-                DmenuWindow::new(&req_primary, res_primary, done, window, cx)
+                DmenuWindow::new(req, rx_primary, res_primary, done, window, cx)
             })
         })
         .or_else(|err| {
@@ -1218,12 +1323,16 @@ pub fn open_dmenu_window(
                 .linux_window_background(LinuxWindowBackground::Transparent);
             cx.open_window(fallback_opts, move |window, cx| {
                 cx.new(|cx| {
+                    let req = req_fallback
+                        .borrow_mut()
+                        .take()
+                        .expect("dmenu request available for fallback window");
                     let done = move |outcome: DmenuOutcome| {
                         if let Some(cb) = cb_fallback.borrow_mut().take() {
                             cb(outcome);
                         }
                     };
-                    DmenuWindow::new(&request, res_fallback, done, window, cx)
+                    DmenuWindow::new(req, rx_fallback, res_fallback, done, window, cx)
                 })
             })
         })?;
@@ -1235,16 +1344,16 @@ pub fn open_dmenu_window(
                 let updated = cx.update(|cx| {
                     handle.update(cx, |view, window, cx| match msg {
                         DmenuStreamMessage::Batch { items, item_icons } => {
-                            view.corpus_arc = None;
+                            view.corpus_snapshot = None;
                             view.state.append_batch(items, item_icons);
                             cx.notify();
                         }
                         DmenuStreamMessage::Eof => {
-                            view.corpus_arc = None;
+                            view.corpus_snapshot = None;
                             view.state.finish_loading();
                             should_stop = true;
                             if view.state.items.is_empty() && !view.state.allow_custom {
-                                view.finish(DmenuOutcome::Cancelled, window);
+                                view.finish(DmenuOutcome::Cancelled, window, cx);
                             } else {
                                 cx.notify();
                             }
@@ -1252,6 +1361,7 @@ pub fn open_dmenu_window(
                     })
                 });
                 if should_stop || updated.is_err() {
+                    rx.close();
                     break;
                 }
             }

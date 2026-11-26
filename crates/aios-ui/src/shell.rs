@@ -25,9 +25,9 @@ use aios_plugin_sdk::{PluginEvent, PluginResponse};
 use aios_scripts::{ScriptActionResult, ScriptHost};
 use aios_wayland::{IpcServer, PortalThemeWatcher, detect_compositor};
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, FocusHandle, Focusable, FontWeight,
-    KeyDownEvent, LinuxWindowBackground, QuitMode, Render, ScrollHandle, Size, Window,
-    WindowBounds, WindowHandle, WindowKind, WindowOptions, div,
+    AnyElement, App, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight,
+    KeyDownEvent, LinuxWindowBackground, QuitMode, Render, RetainAllImageCache, ScrollHandle, Size,
+    Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, div, image_cache,
     layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions},
     point,
     prelude::*,
@@ -60,6 +60,7 @@ pub struct LauncherWindow {
     pub grid_scroll: ScrollHandle,
     pub form_scroll: ScrollHandle,
     pub action_panel_scroll: ScrollHandle,
+    image_cache: Entity<RetainAllImageCache>,
     sync_scroll: Cell<bool>,
 }
 
@@ -96,6 +97,7 @@ impl LauncherWindow {
             initial_root_view,
         ));
 
+        let image_cache = RetainAllImageCache::new(cx);
         let mut this = Self {
             state,
             root_search,
@@ -106,6 +108,7 @@ impl LauncherWindow {
             grid_scroll: ScrollHandle::new(),
             form_scroll: ScrollHandle::new(),
             action_panel_scroll: ScrollHandle::new(),
+            image_cache,
             sync_scroll: Cell::new(true),
         };
         if let Some(uri) = initial_uri {
@@ -1668,7 +1671,7 @@ impl Render for LauncherWindow {
             shell = shell.child(overlay);
         }
 
-        shell
+        image_cache(self.image_cache.clone()).size_full().child(shell)
     }
 }
 
@@ -1979,12 +1982,21 @@ pub fn run_daemon_app(
 
                             let env_cell = Rc::new(RefCell::new(Some(env)));
                             let env_for_cb = Rc::clone(&env_cell);
+                            let dmenu_for_done = Rc::clone(&dmenu_for_ipc);
+                            let opened_handle: Rc<Cell<Option<WindowHandle<DmenuWindow>>>> =
+                                Rc::new(Cell::new(None));
+                            let opened_for_done = Rc::clone(&opened_handle);
                             match open_dmenu_window(
                                 &cfg_for_ipc,
                                 request,
                                 stream_rx,
                                 Arc::clone(&icons_for_ipc),
                                 move |outcome| {
+                                    if let Some(mine) = opened_for_done.get()
+                                        && *dmenu_for_done.borrow() == Some(mine)
+                                    {
+                                        *dmenu_for_done.borrow_mut() = None;
+                                    }
                                     if let Some(env) = env_for_cb.borrow_mut().take() {
                                         let resp = match outcome {
                                             DmenuOutcome::Selected { value, index } => {
@@ -1999,7 +2011,10 @@ pub fn run_daemon_app(
                                 },
                                 cx,
                             ) {
-                                Ok(h) => *dmenu_for_ipc.borrow_mut() = Some(h),
+                                Ok(h) => {
+                                    opened_handle.set(Some(h));
+                                    *dmenu_for_ipc.borrow_mut() = Some(h);
+                                }
                                 Err(err) => {
                                     if let Some(env) = env_cell.borrow_mut().take() {
                                         env.respond(DaemonIpcResponse::Error {

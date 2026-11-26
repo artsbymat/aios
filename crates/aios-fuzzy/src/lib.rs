@@ -5,17 +5,19 @@
 //! adaptive inline + progressive parallel execution architecture, implemented purely in Rust
 //! with zero `skim` or `fuzzy-matcher` dependencies.
 
+pub mod corpus;
 pub mod frecency;
 pub mod parallel;
 pub mod query;
 pub mod scorer;
 
+pub use corpus::{PackedTextCorpus, PackedTextSnapshot};
 pub use frecency::{
     FrecencyConfig, FrecencyRecord, compute_frecency_boost, decay_weight, score_item,
 };
 pub use parallel::{
-    CancellationToken, FrecencyMap, RankedItem, SearchConfig, SearchHandle, SearchSession,
-    SearchSnapshot, search_parallel,
+    CancellationToken, FrecencyMap, PackedSearchSession, RankedItem, SearchConfig, SearchHandle,
+    SearchSession, SearchSnapshot, search_packed_parallel, search_parallel,
 };
 pub use query::{
     AndEngine, ExactEngine, ExactFullEngine, FuzzyEngine, InverseEngine, MatchAllEngine, OrEngine,
