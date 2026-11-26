@@ -32,7 +32,7 @@ use gpui::{
 
 use crate::components::{
     aios_brand_mark, app_icon_or_badge, enter_keycap, highlighted_text, item_badge, keycap,
-    loading_progress_bar, render_empty_state, render_loading_state, window_shadow,
+    loading_progress_bar, render_empty_state, render_loading_state,
 };
 use crate::theme::AiosTheme;
 
@@ -1093,44 +1093,39 @@ impl Render for DmenuWindow {
             );
 
         div()
+            .id("aios-dmenu-shell")
             .size_full()
-            .p(px(10.0))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
+            .flex()
+            .flex_col()
+            .rounded(theme.metrics.radius_window)
+            .bg(c.bg_canvas_root)
+            .border_1()
+            .border_color(c.border_default)
+            .overflow_hidden()
+            .font(theme.sans_font())
+            .text_color(c.text_primary)
+            .child(header)
             .child(
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .rounded(theme.metrics.radius_window)
-                    .bg(c.bg_canvas_root)
-                    .border_1()
-                    .border_color(c.border_default)
-                    .shadow(window_shadow(&theme))
-                    .overflow_hidden()
-                    .font(theme.sans_font())
-                    .text_color(c.text_primary)
-                    .child(header)
-                    .child(
-                        if (self.state.is_loading || self.is_searching) && matched_items > 0 {
-                            loading_progress_bar(
-                                "aios-dmenu-header-loading",
-                                None,
-                                2.0,
-                                false,
-                                &theme,
-                            )
-                        } else {
-                            div()
-                                .w_full()
-                                .h(px(1.0))
-                                .bg(c.border_subtle)
-                                .into_any_element()
-                        },
+                if (self.state.is_loading || self.is_searching) && matched_items > 0 {
+                    loading_progress_bar(
+                        "aios-dmenu-header-loading",
+                        None,
+                        2.0,
+                        false,
+                        &theme,
                     )
-                    .child(body)
-                    .child(footer),
+                } else {
+                    div()
+                        .w_full()
+                        .h(px(1.0))
+                        .bg(c.border_subtle)
+                        .into_any_element()
+                },
             )
+            .child(body)
+            .child(footer)
     }
 }
 
@@ -1138,7 +1133,7 @@ impl Render for DmenuWindow {
 #[must_use]
 pub fn compute_dmenu_height(config: &AiosConfig, request: &DmenuRequest) -> f32 {
     if request.items.is_empty() && request.allow_custom && !request.streaming {
-        return 148.0;
+        return 132.0;
     }
     let visible_rows = request
         .lines
@@ -1150,10 +1145,10 @@ pub fn compute_dmenu_height(config: &AiosConfig, request: &DmenuRequest) -> f32 
             }
         })
         .clamp(1, 14);
-    // 52px header + 1px divider + 34px footer + 20px outer shadow padding + 16px list padding + rows * 42px
-    let content_height = 52.0 + 1.0 + 34.0 + 20.0 + 16.0 + (visible_rows as f32) * 42.0;
+    // 52px header + 1px divider + 40px footer + 16px list padding + rows * 42px
+    let content_height = 52.0 + 1.0 + 40.0 + 16.0 + (visible_rows as f32) * 42.0;
     let max_h = (config.window.max_height as f32).max(260.0);
-    content_height.clamp(180.0, max_h)
+    content_height.clamp(160.0, max_h)
 }
 
 /// Opens a native Wayland LayerShell `DmenuWindow` inside an already-running GPUI `App` (daemon or standalone),
