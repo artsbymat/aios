@@ -305,7 +305,7 @@ Every interactive component defines five explicit states: `default`, `hover`, `a
 
 - Height: `40px` (`listRow.height`), horizontal flex (`Hug` icon + `Fill` title/subtitle + `Hug` accessories).
 - Selected state: `bg.selected` fill + `2px` left `accent.solid` vertical rail (functional selection signal).
-- Accessories: Right-aligned cluster (`gap: 8px`) supporting text, bordered status tags (color + icon + text), relative dates (`tnum`), and icon tooltips.
+- Accessories: Right-aligned cluster (`gap: 8px`) supporting text, recessed mineral status tags (`bg.subtle` + `1px` `border.default` + `2px × 10px` vertical semantic rail + neutral mono label, never pastel tinted pills or circular SaaS dots), relative dates (`tnum`), and icon tooltips.
 
 ### 3. Inline Calculator Banner (Root Search Special Widget)
 

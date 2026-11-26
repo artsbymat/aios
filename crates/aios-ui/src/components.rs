@@ -287,21 +287,57 @@ fn keycap_text_pill(label: &str, theme: &AiosTheme) -> Div {
         .child(label.to_owned())
 }
 
-/// Renders a semantic status badge pairing color with readable text (never color alone).
+/// Renders a recessed mineral status/category tag pairing an optional `2px × 10px`
+/// vertical semantic rail with crisp neutral monospace text (never tinted pastel pills).
 pub fn semantic_tag(label: &str, tone: SemanticTone, theme: &AiosTheme) -> Div {
-    let (fg, bg) = theme.colors.tone_colors(tone);
-    div()
-        .px(px(6.0))
-        .py(px(2.0))
+    let c = &theme.colors;
+    let bar_color = match tone {
+        SemanticTone::Neutral => None,
+        SemanticTone::Accent => Some(c.accent_solid),
+        SemanticTone::Success => Some(c.status_success),
+        SemanticTone::Warning => Some(c.status_warning),
+        SemanticTone::Danger => Some(c.status_danger),
+    };
+    let text_color = match tone {
+        SemanticTone::Neutral => c.text_secondary,
+        _ => c.text_primary,
+    };
+
+    let mut tag = div()
+        .flex_shrink_0()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .pl(if bar_color.is_some() { px(6.0) } else { px(7.0) })
+        .pr(px(7.0))
+        .py(px(3.0))
         .rounded(theme.metrics.radius_xs)
-        .bg(bg)
+        .bg(c.bg_subtle)
         .border_1()
-        .border_color(theme.colors.border_subtle)
-        .text_color(fg)
-        .text_size(px(11.0))
-        .font_weight(FontWeight::MEDIUM)
-        .line_height(px(14.0))
-        .child(label.to_owned())
+        .border_color(c.border_default);
+
+    if let Some(rail) = bar_color {
+        tag = tag.child(
+            div()
+                .flex_shrink_0()
+                .w(px(2.0))
+                .h(px(10.0))
+                .rounded(px(1.0))
+                .bg(rail),
+        );
+    }
+
+    tag.child(
+        div()
+            .text_color(text_color)
+            .font(theme.mono_font())
+            .text_size(px(11.0))
+            .font_weight(FontWeight::MEDIUM)
+            .line_height(px(14.0))
+            .whitespace_nowrap()
+            .child(label.to_owned()),
+    )
 }
 
 /// Renders a list item accessory (`Text`, `Tag`, or `Date`).
