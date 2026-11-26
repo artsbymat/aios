@@ -1718,7 +1718,7 @@ fn sync_external_entries_to_root_search(
                 title: entry.title,
                 subtitle: entry.subtitle,
                 badge: entry.badge,
-                icon_path: None,
+                icon_path: entry.icon_path,
                 keywords: entry.keywords,
                 filter_group: entry.filter_group,
                 action_id: entry.action_id,
@@ -1817,6 +1817,7 @@ fn open_launcher_window(
 fn open_runtime_hosts(
     config: &AiosConfig,
     paths: &AiosPaths,
+    icon_resolver: &Arc<Mutex<IconResolver>>,
 ) -> (RootSearchOrchestrator, PluginHost, ScriptHost) {
     let db = match Database::open(&paths.database_file()) {
         Ok(db) => db,
@@ -1838,7 +1839,10 @@ fn open_runtime_hosts(
         WasmExecutionLimits::default(),
     )
     .expect("failed to initialize AIOS Wasmtime plugin runtime");
-    let script_host = ScriptHost::new(paths.clone());
+    let resolver_for_scripts = Arc::clone(icon_resolver);
+    let script_host = ScriptHost::with_icon_resolver(paths.clone(), move |name| {
+        resolver_for_scripts.lock().ok()?.resolve(name)
+    });
     (orchestrator, plugin_host, script_host)
 }
 
@@ -1851,7 +1855,9 @@ pub fn run_daemon_app(
     let (_ipc_server, ipc_rx) = IpcServer::bind(&paths.runtime_socket)?;
     let (_portal_watcher, initial_scheme, portal_rx) = PortalThemeWatcher::spawn();
     let compositor = detect_compositor();
-    let (orchestrator, plugin_host, script_host) = open_runtime_hosts(&config, &paths);
+    let shared_icon_resolver = Arc::new(Mutex::new(IconResolver::new()));
+    let (orchestrator, plugin_host, script_host) =
+        open_runtime_hosts(&config, &paths, &shared_icon_resolver);
 
     tracing::info!(
         socket = %paths.runtime_socket.display(),
@@ -1881,7 +1887,6 @@ pub fn run_daemon_app(
             let root_search = Rc::new(RefCell::new(orchestrator));
             let plugin_host = Rc::new(RefCell::new(plugin_host));
             let script_host = Rc::new(RefCell::new(script_host));
-            let shared_icon_resolver = Arc::new(Mutex::new(IconResolver::new()));
             // Pre-warm the XDG icon index on a background thread at daemon startup so
             // subsequent `aios dmenu --show-icons` calls incur 0ms icon-index overhead.
             let warm_icons = Arc::clone(&shared_icon_resolver);
@@ -2151,7 +2156,9 @@ pub fn run_preview_app(
         config.theme.mode = mode;
     }
     let (_portal_watcher, initial_scheme, portal_rx) = PortalThemeWatcher::spawn();
-    let (orchestrator, plugin_host, script_host) = open_runtime_hosts(&config, &paths);
+    let shared_icon_resolver = Arc::new(Mutex::new(IconResolver::new()));
+    let (orchestrator, plugin_host, script_host) =
+        open_runtime_hosts(&config, &paths, &shared_icon_resolver);
 
     gpui_platform::application()
         .with_assets(crate::fonts::AiosAssetSource)
@@ -2205,7 +2212,9 @@ pub fn run_dev_plugin_app(
         config.theme.mode = mode;
     }
     let (_portal_watcher, initial_scheme, portal_rx) = PortalThemeWatcher::spawn();
-    let (orchestrator, mut plugin_host, script_host) = open_runtime_hosts(&config, &paths);
+    let shared_icon_resolver = Arc::new(Mutex::new(IconResolver::new()));
+    let (orchestrator, mut plugin_host, script_host) =
+        open_runtime_hosts(&config, &paths, &shared_icon_resolver);
     let initial_bundle = plugin_host
         .attach_dev_plugin(&dev_dir)
         .expect("dev plugin directory must contain valid aios-plugin.toml and .wasm");

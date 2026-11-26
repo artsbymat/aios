@@ -141,3 +141,95 @@ fn script_manager_view_reload_and_copy_dir_work_independently() {
         PluginResponse::CopyToClipboard { ref text, .. } if text == &paths.scripts_dir().display().to_string()
     ));
 }
+
+#[test]
+fn script_custom_icons_resolve_relative_absolute_xdg_and_badge_fallback() {
+    let tmp = TempDir::new().expect("temp dir");
+    let paths = temp_paths(&tmp);
+    let scripts_dir = paths.scripts_dir();
+    let icons_dir = scripts_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("create icons dir");
+
+    let rel_svg = icons_dir.join("disk.svg");
+    fs::write(&rel_svg, "<svg xmlns=\"http://www.w3.org/2000/svg\"/>").expect("write rel svg");
+
+    let abs_png = tmp.path().join("custom-tool.png");
+    fs::write(&abs_png, b"\x89PNG\r\n\x1a\n").expect("write abs png");
+
+    let xdg_svg = tmp.path().join("drive-harddisk.svg");
+    fs::write(&xdg_svg, "<svg xmlns=\"http://www.w3.org/2000/svg\"/>").expect("write xdg svg");
+
+    fs::write(
+        scripts_dir.join("rel-icon.sh"),
+        "#!/usr/bin/env sh\n# @aios.schemaVersion 1\n# @aios.title Disk Usage\n# @aios.icon ./icons/disk.svg\necho ok\n",
+    )
+    .expect("write rel script");
+    fs::write(
+        scripts_dir.join("abs-icon.sh"),
+        format!(
+            "#!/usr/bin/env sh\n# @aios.schemaVersion 1\n# @aios.title Custom Tool\n# @aios.icon {}\necho ok\n",
+            abs_png.display()
+        ),
+    )
+    .expect("write abs script");
+    fs::write(
+        scripts_dir.join("xdg-icon.sh"),
+        "#!/usr/bin/env sh\n# @aios.schemaVersion 1\n# @aios.title Storage Check\n# @aios.icon drive-harddisk\necho ok\n",
+    )
+    .expect("write xdg script");
+    fs::write(
+        scripts_dir.join("badge-only.sh"),
+        "#!/usr/bin/env sh\n# @aios.schemaVersion 1\n# @aios.title Badge Script\n# @aios.icon DF\necho ok\n",
+    )
+    .expect("write badge script");
+
+    let xdg_target = xdg_svg.clone();
+    let host = ScriptHost::with_icon_resolver(paths, move |name| {
+        if name == "drive-harddisk" {
+            Some(xdg_target.clone())
+        } else {
+            None
+        }
+    });
+
+    let entries = host.root_search_entries();
+    let by_id = |id: &str| {
+        entries
+            .iter()
+            .find(|e| e.id == id)
+            .unwrap_or_else(|| panic!("missing {id}"))
+    };
+
+    let rel_entry = by_id("script:rel-icon");
+    assert_eq!(
+        rel_entry.icon_path.as_deref(),
+        Some(rel_svg.canonicalize().unwrap().to_str().unwrap())
+    );
+    assert_eq!(rel_entry.badge, "DU");
+
+    let abs_entry = by_id("script:abs-icon");
+    assert_eq!(
+        abs_entry.icon_path.as_deref(),
+        Some(abs_png.canonicalize().unwrap().to_str().unwrap())
+    );
+    assert_eq!(abs_entry.badge, "CT");
+
+    let xdg_entry = by_id("script:xdg-icon");
+    assert_eq!(xdg_entry.icon_path.as_deref(), xdg_svg.to_str());
+    assert_eq!(xdg_entry.badge, "SC");
+
+    let badge_entry = by_id("script:badge-only");
+    assert_eq!(badge_entry.icon_path, None);
+    assert_eq!(badge_entry.badge, "DF");
+
+    // Verify Script Commands Manager view also carries resolved `icon_path`.
+    let ViewNode::List(list) = host.build_manager_view() else {
+        panic!("expected ListView for script manager");
+    };
+    let manager_items: Vec<_> = list.sections.iter().flat_map(|s| &s.items).collect();
+    let mgr_xdg = manager_items
+        .iter()
+        .find(|i| i.id == "mgr-script:script:xdg-icon")
+        .expect("manager xdg item");
+    assert_eq!(mgr_xdg.icon_path.as_deref(), xdg_svg.to_str());
+}

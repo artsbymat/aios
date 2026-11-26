@@ -72,11 +72,36 @@ pub struct ScriptCommand {
     pub needs_confirmation: bool,
     pub refresh_time_secs: Option<u64>,
     pub icon: Option<String>,
+    pub icon_path: Option<PathBuf>,
     pub arguments: Vec<InlineArgumentSpec>,
     pub path: PathBuf,
 }
 
 impl ScriptCommand {
+    /// Returns a crisp 1-4 character badge fallback for rows without a resolved image icon.
+    #[must_use]
+    pub fn badge_label(&self) -> String {
+        if let Some(raw) = self.icon.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            && self.icon_path.is_none()
+            && !looks_like_icon_path(raw)
+            && raw.chars().count() <= 4
+        {
+            return raw.to_owned();
+        }
+        let initials: String = self
+            .title
+            .split_whitespace()
+            .filter_map(|word| word.chars().next())
+            .take(2)
+            .collect::<String>()
+            .to_uppercase();
+        if !initials.is_empty() {
+            initials
+        } else {
+            "SH".to_string()
+        }
+    }
+
     /// Builds a standard destructive/confirmation modal if `needs_confirmation` is enabled.
     #[must_use]
     pub fn confirmation_alert(&self, encoded_args: &str) -> ConfirmAlert {
@@ -223,6 +248,10 @@ pub fn parse_script_metadata(path: &Path, content: &str) -> Option<ScriptCommand
         .filter_map(|(_, spec)| spec)
         .collect();
 
+    let icon_path = icon
+        .as_deref()
+        .and_then(|spec| resolve_local_script_icon(path, spec));
+
     Some(ScriptCommand {
         id: format!("script:{stem}"),
         schema_version,
@@ -233,9 +262,70 @@ pub fn parse_script_metadata(path: &Path, content: &str) -> Option<ScriptCommand
         needs_confirmation,
         refresh_time_secs,
         icon,
+        icon_path,
         arguments,
         path: path.to_path_buf(),
     })
+}
+
+fn is_supported_icon_ext(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "svg" | "png" | "jpg" | "jpeg" | "webp"
+            )
+        })
+}
+
+fn looks_like_icon_path(spec: &str) -> bool {
+    spec.contains('/')
+        || spec.contains('\\')
+        || spec.starts_with('~')
+        || is_supported_icon_ext(Path::new(spec))
+}
+
+/// Returns `true` if `# @aios.icon <spec>` should be looked up in the system XDG icon theme
+/// (e.g. `drive-harddisk`, `utilities-terminal`) rather than treated purely as a short monogram badge.
+#[must_use]
+pub(crate) fn should_try_xdg_icon_lookup(spec: &str) -> bool {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() || looks_like_icon_path(trimmed) {
+        return false;
+    }
+    let char_count = trimmed.chars().count();
+    let is_short_upper_badge = char_count <= 3
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+    !is_short_upper_badge
+}
+
+/// Resolves `# @aios.icon <spec>` when it references a local `.svg`/`.png`/`.jpg`/`.webp` file
+/// (absolute, `~/...`, or relative to the script's parent directory).
+fn resolve_local_script_icon(script_path: &Path, raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let candidate = if let Some(rest) = trimmed.strip_prefix("~/") {
+        PathBuf::from(std::env::var_os("HOME")?).join(rest)
+    } else {
+        let p = Path::new(trimmed);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            script_path.parent()?.join(p)
+        }
+    };
+
+    if candidate.is_file() && is_supported_icon_ext(&candidate) {
+        Some(candidate.canonicalize().unwrap_or(candidate))
+    } else {
+        None
+    }
 }
 
 fn parse_refresh_duration(raw: &str) -> Option<u64> {

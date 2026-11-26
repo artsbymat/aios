@@ -2,6 +2,8 @@
 //! confirmation prompts, inline summaries, and the Script Commands Manager view.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use aios_core::AiosPaths;
@@ -12,7 +14,10 @@ use aios_plugin_sdk::{
 use crate::manager_view::build_scripts_manager_view;
 use crate::runner::{
     ScriptCommand, ScriptMode, discover_script_commands, execute_script_command,
+    should_try_xdg_icon_lookup,
 };
+
+type IconLookupFn = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 
 /// Summary entry exported to Root Search for one discovered Script Command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +26,7 @@ pub struct RootScriptEntry {
     pub title: String,
     pub subtitle: String,
     pub badge: String,
+    pub icon_path: Option<String>,
     pub keywords: Vec<String>,
     pub filter_group: &'static str,
     pub action_id: String,
@@ -47,24 +53,49 @@ impl ScriptActionResult {
 }
 
 /// Top-level Script Commands host owned by the AIOS daemon / preview shell.
-#[derive(Debug)]
 pub struct ScriptHost {
     paths: AiosPaths,
     scripts: Vec<ScriptCommand>,
     last_script_outputs: HashMap<String, String>,
     inline_script_summaries: HashMap<String, String>,
+    icon_resolver: Option<IconLookupFn>,
     script_timeout: Duration,
+}
+
+impl std::fmt::Debug for ScriptHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptHost")
+            .field("paths", &self.paths)
+            .field("scripts", &self.scripts.len())
+            .field("has_icon_resolver", &self.icon_resolver.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl ScriptHost {
     /// Initializes the Script Commands host by scanning `$XDG_CONFIG_HOME/aios/scripts/`.
     #[must_use]
     pub fn new(paths: AiosPaths) -> Self {
+        Self::new_internal(paths, None)
+    }
+
+    /// Initializes the Script Commands host with a system XDG icon theme resolver so scripts
+    /// can declare `# @aios.icon drive-harddisk` in addition to local `.svg`/`.png` paths.
+    #[must_use]
+    pub fn with_icon_resolver(
+        paths: AiosPaths,
+        resolver: impl Fn(&str) -> Option<PathBuf> + Send + Sync + 'static,
+    ) -> Self {
+        Self::new_internal(paths, Some(Arc::new(resolver)))
+    }
+
+    fn new_internal(paths: AiosPaths, icon_resolver: Option<IconLookupFn>) -> Self {
         let mut host = Self {
             paths,
             scripts: Vec::new(),
             last_script_outputs: HashMap::new(),
             inline_script_summaries: HashMap::new(),
+            icon_resolver,
             script_timeout: Duration::from_secs(15),
         };
         host.reload();
@@ -74,6 +105,17 @@ impl ScriptHost {
     /// Re-scans `$XDG_CONFIG_HOME/aios/scripts/` and refreshes inline script summaries.
     pub fn reload(&mut self) {
         self.scripts = discover_script_commands(&self.paths.scripts_dir());
+        if let Some(resolver) = &self.icon_resolver {
+            for sc in &mut self.scripts {
+                if sc.icon_path.is_none()
+                    && let Some(spec) = sc.icon.as_deref()
+                    && should_try_xdg_icon_lookup(spec)
+                    && let Some(resolved) = resolver(spec)
+                {
+                    sc.icon_path = Some(resolved);
+                }
+            }
+        }
         self.inline_script_summaries.clear();
         self.refresh_inline_scripts();
     }
@@ -130,7 +172,8 @@ impl ScriptHost {
                         .clone()
                         .or_else(|| sc.package_name.clone())
                         .unwrap_or_else(|| "Script Command".to_string()),
-                    badge: sc.icon.clone().unwrap_or_else(|| "SH".to_string()),
+                    badge: sc.badge_label(),
+                    icon_path: sc.icon_path.as_ref().map(|p| p.display().to_string()),
                     keywords,
                     filter_group: "scripts",
                     action_id: format!("script.run:{}", sc.id),

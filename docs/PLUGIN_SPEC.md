@@ -270,9 +270,16 @@ Users can drop executable scripts into `~/.config/aios/scripts/` with structured
 # @aios.title Clear Cargo Target Cache
 # @aios.mode fullOutput
 # @aios.packageName Developer Tools
+# @aios.icon drive-harddisk
 # @aios.needsConfirmation true
 # @aios.argument1 { "type": "text", "placeholder": "Project path", "optional": true }
 ```
+
+`# @aios.icon` accepts:
+
+- A local image file path (`.svg`, `.png`, `.jpg`, `.jpeg`, `.webp`): absolute, `~/...`, or relative to the script's directory (for example `./icons/disk.svg`).
+- A system XDG icon theme name (for example `drive-harddisk`, `utilities-terminal`), resolved through the shared `IconResolver`.
+- A short text monogram/glyph badge (for example `DF` or `SH`), used directly as a 24x24px badge fallback.
 
 Supported Script Command modes:
 
