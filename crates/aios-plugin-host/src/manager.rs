@@ -10,6 +10,9 @@ use aios_plugin_sdk::{
     ActionItem, ActionPanel, CommandMode, HudMessage, MenuBarState, PluginEvent, PluginResponse,
     ToastMessage, ToastStyle, ViewNode,
 };
+use aios_plugins::{
+    FirstPartyPlugin, InlinePluginResult, PluginEnv, default_first_party_plugins,
+};
 
 use crate::manifest::{
     InstalledPlugin, discover_plugins, install_plugin_from_dir, load_plugin_from_dir,
@@ -17,8 +20,8 @@ use crate::manifest::{
 };
 use crate::permissions::{HostContext, HostSideEffect, now_epoch_secs};
 use crate::settings::{
-    build_install_plugin_form, build_plugin_capabilities_view, build_plugin_preferences_form,
-    build_settings_home_view, build_uninstall_confirm_alert,
+    build_install_plugin_form, build_manifest_preferences_form, build_plugin_capabilities_view,
+    build_settings_home_view_with_first_party, build_uninstall_confirm_alert,
 };
 use crate::wasm_runtime::{WasmCallOutput, WasmExecutionLimits, WasmPluginRuntime};
 
@@ -64,12 +67,13 @@ pub struct PluginHost {
     db: Arc<Mutex<Database>>,
     wasm: WasmPluginRuntime,
     plugins: Vec<InstalledPlugin>,
+    first_party: Vec<Box<dyn FirstPartyPlugin>>,
     clipboard: Arc<Mutex<Option<String>>>,
     menu_bar_states: HashMap<String, MenuBarState>,
 }
 
 impl PluginHost {
-    /// Initializes the WASM plugin host, discovering installed WASM bundles.
+    /// Initializes the plugin host, registering first-party plugins and discovering installed WASM bundles.
     pub fn new(
         config: AiosConfig,
         paths: AiosPaths,
@@ -83,6 +87,7 @@ impl PluginHost {
             db,
             wasm,
             plugins: Vec::new(),
+            first_party: default_first_party_plugins(),
             clipboard: Arc::new(Mutex::new(None)),
             menu_bar_states: HashMap::new(),
         };
@@ -121,6 +126,37 @@ impl PluginHost {
     #[must_use]
     pub fn find_plugin(&self, plugin_id: &str) -> Option<&InstalledPlugin> {
         self.plugins.iter().find(|p| p.manifest.id == plugin_id)
+    }
+
+    #[must_use]
+    pub fn first_party_plugins(&self) -> &[Box<dyn FirstPartyPlugin>] {
+        &self.first_party
+    }
+
+    #[must_use]
+    pub fn find_first_party(&self, plugin_id: &str) -> Option<&dyn FirstPartyPlugin> {
+        self.first_party
+            .iter()
+            .find(|p| p.manifest().id == plugin_id)
+            .map(Box::as_ref)
+    }
+
+    /// Evaluates opt-in inline Root Search providers (such as Calculator) gated by sub-microsecond
+    /// host checks so normal app queries incur zero plugin overhead.
+    #[must_use]
+    pub fn evaluate_inline_query(&self, query: &str, theme_mode: &str) -> Vec<InlinePluginResult> {
+        if query.trim().is_empty() {
+            return Vec::new();
+        }
+        let mut results = Vec::new();
+        for plugin in &self.first_party {
+            let manifest = plugin.manifest();
+            let env = PluginEnv::new(&manifest.id, theme_mode, Arc::clone(&self.db));
+            if let Some(res) = plugin.evaluate_inline_query(query, &env) {
+                results.push(res);
+            }
+        }
+        results
     }
 
     #[must_use]
@@ -184,10 +220,33 @@ impl PluginHost {
         Ok(())
     }
 
-    /// Returns Root Search items for all installed WASM plugin commands (filter group `"plugins"`).
+    /// Returns Root Search items for all first-party and installed WASM plugin commands (filter group `"plugins"`).
     #[must_use]
     pub fn root_search_entries(&self) -> Vec<RootPluginEntry> {
         let mut out = Vec::new();
+        for plugin in &self.first_party {
+            let m = plugin.manifest();
+            for cmd in &m.commands {
+                let mut keywords = cmd.keywords.clone();
+                keywords.push(m.name.clone());
+                keywords.push("plugin".to_string());
+                out.push(RootPluginEntry {
+                    id: format!("plugin:{}:{}", m.id, cmd.id),
+                    title: cmd.title.clone(),
+                    subtitle: cmd.subtitle.clone().unwrap_or_else(|| m.name.clone()),
+                    badge: plugin.badge().to_string(),
+                    icon_path: None,
+                    keywords,
+                    filter_group: "plugins",
+                    action_id: format!("plugin.run:{}:{}", m.id, cmd.id),
+                    secondary_action_id: Some((
+                        format!("settings.plugin-prefs:{}", m.id),
+                        "Configure Preferences".to_string(),
+                    )),
+                    tag_label: "Plugin".to_string(),
+                });
+            }
+        }
         for plugin in &self.plugins {
             let m = &plugin.manifest;
             let icon_path = plugin
@@ -224,7 +283,7 @@ impl PluginHost {
         out
     }
 
-    /// Invokes a WASM plugin command (`lifecycle::init-command`) with full crash isolation.
+    /// Invokes a first-party or WASM plugin command (`lifecycle::init-command`) with full crash isolation.
     pub fn run_wasm_command(
         &mut self,
         plugin_id: &str,
@@ -232,6 +291,30 @@ impl PluginHost {
         args_json: &str,
         theme_mode: &str,
     ) -> HostActionResult {
+        if let Some(fp) = self.find_first_party(plugin_id) {
+            let args: Vec<String> = serde_json::from_str(args_json).unwrap_or_default();
+            let env = PluginEnv::new(plugin_id, theme_mode, Arc::clone(&self.db));
+            let raw_resp = fp.init_command(command_id, &args, &env);
+            let response = match raw_resp {
+                PluginResponse::Render { view } => PluginResponse::Push {
+                    frame_id: Some(format!("plugin:{plugin_id}:{command_id}")),
+                    view,
+                },
+                other => other,
+            };
+            let session = match &response {
+                PluginResponse::Render { .. } | PluginResponse::Push { .. } => {
+                    Some((plugin_id.to_owned(), command_id.to_owned()))
+                }
+                _ => None,
+            };
+            return HostActionResult {
+                response,
+                side_effects: Vec::new(),
+                active_plugin_session: session,
+            };
+        }
+
         let Some(plugin) = self.find_plugin(plugin_id).cloned() else {
             return HostActionResult::response_only(PluginResponse::ShowToast {
                 toast: ToastMessage {
@@ -299,7 +382,7 @@ impl PluginHost {
         }
     }
 
-    /// Delivers a [`PluginEvent`] to an active WASM plugin view with full crash isolation.
+    /// Delivers a [`PluginEvent`] to an active first-party or WASM plugin view with full crash isolation.
     pub fn send_wasm_event(
         &mut self,
         plugin_id: &str,
@@ -307,6 +390,16 @@ impl PluginHost {
         event: &PluginEvent,
         theme_mode: &str,
     ) -> HostActionResult {
+        if let Some(fp) = self.find_first_party(plugin_id) {
+            let env = PluginEnv::new(plugin_id, theme_mode, Arc::clone(&self.db));
+            let response = fp.handle_event(command_id, event, &env);
+            return HostActionResult {
+                response,
+                side_effects: Vec::new(),
+                active_plugin_session: Some((plugin_id.to_owned(), command_id.to_owned())),
+            };
+        }
+
         let Some(plugin) = self.find_plugin(plugin_id).cloned() else {
             return HostActionResult::response_only(PluginResponse::ShowToast {
                 toast: ToastMessage {
@@ -385,7 +478,18 @@ impl PluginHost {
     #[must_use]
     pub fn build_settings_view(&self) -> ViewNode {
         let perms = self.collect_all_permissions();
-        build_settings_home_view(&self.config, &self.paths, &self.plugins, &perms)
+        let fp_entries: Vec<_> = self
+            .first_party
+            .iter()
+            .map(|p| (p.manifest(), p.badge()))
+            .collect();
+        build_settings_home_view_with_first_party(
+            &self.config,
+            &self.paths,
+            &fp_entries,
+            &self.plugins,
+            &perms,
+        )
     }
 
     /// Handles Settings & Plugins and WASM Plugin actions emitted by the UI shell.
@@ -396,6 +500,22 @@ impl PluginHost {
         form_values: Option<&BTreeMap<String, String>>,
         theme_mode: &str,
     ) -> Option<HostActionResult> {
+        if let Some(rest) = action_id.strip_prefix("plugin.inline:") {
+            let (plugin_id, inner_action) = rest.split_once(':')?;
+            let fp = self.find_first_party(plugin_id)?;
+            let env = PluginEnv::new(plugin_id, theme_mode, Arc::clone(&self.db));
+            let response = fp.handle_inline_action(inner_action, &env)?;
+            return Some(HostActionResult::response_only(response));
+        }
+
+        if let Some(rest) = action_id.strip_prefix("plugin.run-query:") {
+            let (plugin_id, after_plugin) = rest.split_once(':')?;
+            let (cmd_id, raw_query) = after_plugin.split_once(':')?;
+            let args_json =
+                serde_json::to_string(&[raw_query]).unwrap_or_else(|_| "[]".to_string());
+            return Some(self.run_wasm_command(plugin_id, cmd_id, &args_json, theme_mode));
+        }
+
         if let Some(rest) = action_id.strip_prefix("plugin.run:") {
             let (plugin_id, cmd_id) = rest.split_once(':')?;
             let args_json = serde_json::to_string(inline_args).unwrap_or_else(|_| "[]".to_string());
@@ -544,10 +664,13 @@ impl PluginHost {
         }
 
         if let Some(plugin_id) = action_id.strip_prefix("settings.plugin-prefs:") {
-            let plugin = self.find_plugin(plugin_id)?;
+            let manifest = self
+                .find_plugin(plugin_id)
+                .map(|p| p.manifest.clone())
+                .or_else(|| self.find_first_party(plugin_id).map(|p| p.manifest()))?;
             let mut values = HashMap::new();
             if let Ok(db) = self.db.lock() {
-                for pref in &plugin.manifest.preferences {
+                for pref in &manifest.preferences {
                     if let Ok(Some(v)) = db.get_plugin_preference(plugin_id, &pref.name) {
                         values.insert(pref.name.clone(), v);
                     }
@@ -555,7 +678,7 @@ impl PluginHost {
             }
             return Some(HostActionResult::response_only(PluginResponse::push(
                 Some(format!("settings.prefs:{plugin_id}")),
-                build_plugin_preferences_form(plugin, &values),
+                build_manifest_preferences_form(&manifest, &values),
             )));
         }
 

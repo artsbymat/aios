@@ -46,6 +46,25 @@ pub struct ExternalRootEntry {
     pub inline_summary: Option<String>,
 }
 
+/// Dynamic inline answer injected at the top of Root Search (e.g. Calculator preview).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineRootResult {
+    pub id: String,
+    pub section_title: String,
+    pub section_subtitle: Option<String>,
+    pub title: String,
+    pub subtitle: String,
+    pub badge: String,
+    pub icon_path: Option<String>,
+    pub tag_label: String,
+    pub copy_action_id: String,
+    pub copy_action_title: String,
+    pub open_action_id: String,
+    pub open_action_title: String,
+    /// When `true` (e.g. explicit `=` prefix), hide other Root Search sections and show only inline answers.
+    pub exclusive: bool,
+}
+
 /// Kind of entry indexed in AIOS Root Search.
 #[derive(Debug, Clone)]
 pub enum RootEntryKind {
@@ -237,46 +256,98 @@ impl RootSearchOrchestrator {
     /// `"apps"`, `"commands"`), scored in parallel by `aios-fuzzy` + SQLite frecency.
     #[must_use]
     pub fn build_root_view(&mut self, query: &str, active_filter: &str) -> ViewNode {
+        self.build_root_view_with_inline(query, active_filter, &[])
+    }
+
+    /// Renders the Root Search `ViewNode::List`, optionally prepending dynamic inline answers
+    /// (such as live Calculator expressions) above standard fuzzy matches.
+    #[must_use]
+    pub fn build_root_view_with_inline(
+        &mut self,
+        query: &str,
+        active_filter: &str,
+        inline_results: &[InlineRootResult],
+    ) -> ViewNode {
         let trimmed = query.trim();
         let normalized = trimmed.to_lowercase();
         if normalized != self.last_query_prefix {
             self.reload_frecency(trimmed);
         }
 
-        let now = now_epoch_secs();
-        let visible_entries: Vec<RootEntry> = self
-            .entries
-            .iter()
-            .filter(|e| !self.hidden_ids.contains(&e.id))
-            .filter(|e| {
-                active_filter.is_empty()
-                    || active_filter == "all"
-                    || e.filter_group == active_filter
-            })
-            .cloned()
-            .collect();
-
-        let search_cfg = SearchConfig {
-            limit: if trimmed.is_empty() {
-                visible_entries.len().max(120)
-            } else {
-                120
-            },
-            case_matching: CaseMatching::Smart,
-            frecency: FrecencyConfig::default(),
-            ..SearchConfig::default()
-        };
-
-        let snapshot = search_parallel(
-            &visible_entries,
-            trimmed,
-            &self.frecency_cache,
-            now,
-            &search_cfg,
-            None,
-        );
-
         let mut sections: Vec<ListSection> = Vec::new();
+        let allow_inline =
+            !trimmed.is_empty() && (active_filter.is_empty() || active_filter == "all" || active_filter == "plugins");
+        let is_exclusive_inline =
+            allow_inline && inline_results.iter().any(|item| item.exclusive);
+
+        if allow_inline && !inline_results.is_empty() {
+            for res in inline_results {
+                let item = ListItem {
+                    id: res.id.clone(),
+                    title: res.title.clone(),
+                    subtitle: Some(res.subtitle.clone()),
+                    icon: Some(res.badge.clone()),
+                    icon_path: res.icon_path.clone(),
+                    alias: None,
+                    keywords: Vec::new(),
+                    filter_group: Some("plugins".to_string()),
+                    accessories: vec![Accessory::Tag {
+                        label: res.tag_label.clone(),
+                        tone: SemanticTone::Accent,
+                    }],
+                    detail: None,
+                    actions: ActionPanel::from_actions(vec![
+                        ActionItem::new(res.copy_action_id.clone(), res.copy_action_title.clone())
+                            .shortcut("Enter"),
+                        ActionItem::new(res.open_action_id.clone(), res.open_action_title.clone())
+                            .shortcut("Ctrl+Enter"),
+                    ]),
+                };
+                sections.push(ListSection {
+                    title: Some(res.section_title.clone()),
+                    subtitle: res.section_subtitle.clone(),
+                    items: vec![item],
+                });
+            }
+        }
+
+        let now = now_epoch_secs();
+        let (visible_entries, snapshot) = if is_exclusive_inline {
+            (Vec::new(), None)
+        } else {
+            let visible_entries: Vec<RootEntry> = self
+                .entries
+                .iter()
+                .filter(|e| !self.hidden_ids.contains(&e.id))
+                .filter(|e| {
+                    active_filter.is_empty()
+                        || active_filter == "all"
+                        || e.filter_group == active_filter
+                })
+                .cloned()
+                .collect();
+
+            let search_cfg = SearchConfig {
+                limit: if trimmed.is_empty() {
+                    visible_entries.len().max(120)
+                } else {
+                    120
+                },
+                case_matching: CaseMatching::Smart,
+                frecency: FrecencyConfig::default(),
+                ..SearchConfig::default()
+            };
+
+            let snapshot = search_parallel(
+                &visible_entries,
+                trimmed,
+                &self.frecency_cache,
+                now,
+                &search_cfg,
+                None,
+            );
+            (visible_entries, snapshot)
+        };
 
         if let Some(snap) = snapshot {
             if trimmed.is_empty() {
@@ -1281,5 +1352,48 @@ mod tests {
         assert_eq!(core_only.sections.len(), 1);
         assert_eq!(core_only.sections[0].title.as_deref(), Some("AIOS Core"));
         assert!(core_only.sections[0].items.iter().any(|i| i.id == "core:scripts"));
+    }
+
+    #[test]
+    fn inline_root_results_rank_first_and_exclusive_hides_other_sections() {
+        let db = Arc::new(Mutex::new(Database::open_in_memory().unwrap()));
+        let mut orch = RootSearchOrchestrator::from_apps_shared(
+            AiosConfig::default(),
+            Some(db),
+            vec![sample_app("firefox", "Firefox", "firefox")],
+        );
+
+        let inline = vec![InlineRootResult {
+            id: "inline:calc".to_string(),
+            section_title: "Calculator".to_string(),
+            section_subtitle: Some("Math".to_string()),
+            title: "300".to_string(),
+            subtitle: "10*30".to_string(),
+            badge: "=".to_string(),
+            icon_path: None,
+            tag_label: "Math".to_string(),
+            copy_action_id: "plugin.inline:com.aios.calculator:copy:300".to_string(),
+            copy_action_title: "Copy 300".to_string(),
+            open_action_id: "plugin.run-query:com.aios.calculator:calculator:10*30".to_string(),
+            open_action_title: "Open Calculator & History".to_string(),
+            exclusive: false,
+        }];
+
+        let ViewNode::List(non_exclusive) = orch.build_root_view_with_inline("10*30", "all", &inline)
+        else {
+            panic!("expected list view");
+        };
+        assert_eq!(non_exclusive.sections[0].title.as_deref(), Some("Calculator"));
+        assert_eq!(non_exclusive.sections[0].items[0].title, "300");
+
+        let mut exclusive_inline = inline;
+        exclusive_inline[0].exclusive = true;
+        let ViewNode::List(exclusive_view) =
+            orch.build_root_view_with_inline("=10*30", "all", &exclusive_inline)
+        else {
+            panic!("expected list view");
+        };
+        assert_eq!(exclusive_view.sections.len(), 1);
+        assert_eq!(exclusive_view.sections[0].title.as_deref(), Some("Calculator"));
     }
 }

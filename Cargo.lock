@@ -225,6 +225,7 @@ version = "0.1.0"
 dependencies = [
  "aios-core",
  "aios-plugin-sdk",
+ "aios-plugins",
  "serde",
  "serde_json",
  "tempfile",
@@ -244,6 +245,17 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "aios-plugins"
+version = "0.1.0"
+dependencies = [
+ "aios-core",
+ "aios-plugin-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

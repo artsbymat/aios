@@ -300,3 +300,11 @@ Because AI Chat is intentionally excluded from AIOS core (100% local-first v1), 
 - **Streaming**: Plugin emits incremental `ViewPatch` events while reading chunked responses from `host-api::http-request` (targeting local Ollama `http://127.0.0.1:11434` or remote LLM endpoints allowed in `capabilities.http_hosts`).
 - **Keys & State**: API keys stored securely via `secret-get`/`secret-set`; conversation history stored in `storage-set`.
 - **Context**: Reads clipboard or active selection via capability-gated `clipboard-read-text`.
+
+---
+
+## 8. First-Party Plugins Documentation (`crates/aios-plugins`)
+
+First-party plugins run natively inside `aios-plugin-host` using the same declarative `aios-plugin-sdk` view contract, SQLite KV storage, and Settings preferences UI while remaining decoupled from `aios-builtin`:
+
+- [Calculator & Converter (`com.aios.calculator`)](plugins/calculator.md): Hybrid zero-prefix + `=` exclusive trigger, math/scientific functions, programmer bases & bitwise ops, unit & CSS converter, date/timezone math, 26-currency offline converter, SQLite history, and configurable preferences.

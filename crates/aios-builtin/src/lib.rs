@@ -17,8 +17,8 @@ pub use desktop::{
 };
 pub use icons::IconResolver;
 pub use root_search::{
-    ExternalRootEntry, ExternalRootKind, RootActionOutcome, RootEntry, RootEntryKind,
-    RootSearchOrchestrator,
+    ExternalRootEntry, ExternalRootKind, InlineRootResult, RootActionOutcome, RootEntry,
+    RootEntryKind, RootSearchOrchestrator,
 };
 
 /// Trait implemented by minimal in-process core plugins.

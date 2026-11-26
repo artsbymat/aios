@@ -13,6 +13,7 @@ pub mod watcher;
 use aios_plugin_sdk::PluginManifest;
 use serde::{Deserialize, Serialize};
 
+pub use aios_plugins::{FirstPartyPlugin, InlinePluginResult, PluginEnv};
 pub use manager::{HostActionResult, PluginHost, RootPluginEntry};
 pub use manifest::{
     InstalledPlugin, MANIFEST_FILE_NAME, discover_plugins, install_plugin_from_dir,

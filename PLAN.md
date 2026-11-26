@@ -35,7 +35,8 @@ aios/
     aios-core/               # Domain models, view AST, config, SQLite storage, actions
     aios-wayland/            # Layer-shell helpers, Hyprland & Niri IPC, clipboard, portal theme
     aios-plugin-sdk/         # Guest & native plugin ergonomic Rust API + view builders
-    aios-plugin-host/        # Wasmtime host runtime, capability sandbox, WASM registry & settings
+    aios-plugins/            # First-party Pure Rust plugins suite (Phase 5, decoupled from core)
+    aios-plugin-host/        # Wasmtime host runtime, capability sandbox, first-party & WASM registry, settings
     aios-scripts/            # Standalone Script Commands runner, discovery, inline cache & manager UI
     aios-builtin/            # Core built-in providers (Root Search orchestrator, Application Launcher)
     aios-ui/                 # GPUI theme system, reusable components, 6 view renderers
@@ -54,9 +55,21 @@ aios/
 | Phase 1 | Clean-Room Fuzzy Engine (`aios-fuzzy` + `instantMENU`-style parallel execution)            | `[x]` Completed |
 | Phase 2 | Wayland Shell, GPUI Core UI & Dual-Mode Theme Engine                                       | `[x]` Completed |
 | Phase 3 | Root Search Orchestrator & Application Launcher (Core MVP)                                 | `[x]` Completed |
-| Phase 4 | Hybrid Plugin Runtime (WASM + Script Commands + SDK)                                       | `[x]` Completed |
-| Phase 5 | First-Party External Plugins Suite (Calc, WM, Clipboard, Files, Snippets, etc.)            | `[ ]` Pending     |
-| Phase 6 | Polish, Packaging & Plugin Ecosystem Readiness                                             | `[ ]` Pending   |
+| Phase 4    | Hybrid Plugin Runtime (WASM + Script Commands + SDK)                                       | `[x]` Completed |
+| Phase 5.1  | Plugin: Inline Calculator & Converter (+ Root Search live inline hook)                     | `[x]` Completed |
+| Phase 5.2  | Plugin: Quicklinks (+ Fallback Command integration)                                        | `[ ]` Pending   |
+| Phase 5.3  | Plugin: Snippets (`List+Detail` + `Form` + placeholders + import/export)                   | `[ ]` Pending   |
+| Phase 5.4  | Plugin: Emoji & Symbols Picker (`Grid` + recents + skin tone)                              | `[ ]` Pending   |
+| Phase 5.5  | Plugin: Window Management (`Hyprland` & `Niri` IPC adapters + WIT capability)              | `[ ]` Pending   |
+| Phase 5.6  | Plugin: System Commands (Power, Audio/PipeWire, Brightness, MPRIS, Theme)                  | `[ ]` Pending   |
+| Phase 5.7  | Plugin: Clipboard History (Wayland `data-control` daemon + blob store + privacy rules)     | `[ ]` Pending   |
+| Phase 5.8  | Plugin: File Search & Preview (High-speed walker + `aios-fuzzy` + preview pane)            | `[ ]` Pending   |
+| Phase 5.9  | Plugin: Process Manager (`/proc` live list + `SIGTERM`/`SIGKILL` confirm)                  | `[ ]` Pending   |
+| Phase 5.10 | Plugin: Color Picker & Converter (XDG Portal eyedropper + `Grid` + HEX/RGB/HSL/OKLCH)      | `[ ]` Pending   |
+| Phase 5.11 | Plugin: Focus & Timer (Countdown / Pomodoro + desktop notifications)                       | `[ ]` Pending   |
+| Phase 5.12 | Bridge: Menu Bar / Status Bar (SNI tray + Waybar `aios status --json` stream)              | `[ ]` Pending   |
+| Phase 5.13 | Plugin: Floating Notes / Scratchpad (Separate GPUI `XDG TopLevel` window)                  | `[ ]` Pending   |
+| Phase 6    | Polish, Packaging & Plugin Ecosystem Readiness                                             | `[ ]` Pending   |
 
 ---
 
@@ -128,26 +141,71 @@ aios/
 - [x] Implement **Settings & Extension Manager View** (built using AIOS's own multi-view UI): manage themes, aliases, hotkeys, fallback commands, plugin preferences, capability approvals, and local plugin install/uninstall.
 - [x] **Exit Criteria**: Reference external WASM plugin (`com.aios.palette-grid` `Grid+Form` with `icon.svg`), isolated List+Detail + capability-gate WASM fixtures, Script Commands (`system-uptime.sh`, `disk-usage.sh`), and hybrid `aios dmenu` (`stdin -> stdout` via daemon IPC + standalone fallback) run end-to-end inside AIOS with full isolation.
 
-### Phase 5: First-Party External Plugins Suite `[PENDING]`
+### Phase 5: First-Party External Plugins Suite (1 Sub-Phase per Plugin) `[PENDING]`
 
-**Goal**: Deliver Raycast's productivity suite as modular external plugins running on the Phase 4 Hybrid Plugin Runtime (WASM + Script Commands + host Wayland capabilities).
+**Goal**: Deliver Raycast's productivity suite as modular external plugins running on the Phase 4 Hybrid Plugin Runtime (WASM + host Wayland capabilities), split into 1 independent milestone per plugin so each plugin can be manually checked in Dark & Light themes before moving on.
 
-- [ ] **Inline Calculator & Converter Plugin**: Live math expressions, hex/bin/octal, units (length, weight, temp, data, CSS), date/timezone math, cached offline currency converter.
-- [ ] **Quicklinks Plugin**: Custom URL/path templates with `{query}` / `{argument}` placeholders and Fallback Command integration.
-- [ ] **Window Management Plugin (Hyprland & Niri)**:
-  - [ ] Hyprland IPC capability (`.socket.sock` + `.socket2.sock`): focus window, move/resize/snap, fullscreen, toggle floating, switch/move workspace, move monitor.
-  - [ ] Niri IPC capability (`$NIRI_SOCKET` via `niri-ipc`): focus window/column, consume/expel, maximize/center column, switch/move workspace, overview toggle, monitor switching.
-- [ ] **System Commands Plugin**: Lock, Suspend, Reboot, Shutdown, Logout, Empty Trash, PipeWire/PulseAudio volume & sink switcher, brightness, MPRIS media controls, Dark/Light theme toggle.
-- [ ] **Clipboard History Plugin**: Pure Rust Wayland daemon (`ext-data-control-v1` / `zwlr_data_control_v1`) modeled on `Rolv-Apneseth/clipvault`'s storage & privacy design (byte-for-byte preservation, min/max entry size & age housekeeping, regex ignore patterns + sensitive-app window blacklist) supporting text, code, links, images, files, and color swatches; split preview pane; pin/delete; copy/paste action.
-- [ ] **File Search & Preview Plugin**: High-speed file walker + `aios-fuzzy` filtering, directory drill-down, preview pane (text/code/image/metadata), open/reveal/copy path/trash.
-- [ ] **Snippets Plugin**: Snippet manager (`List+Detail` + `Form` editor), dynamic placeholders (`{clipboard}`, `{date}`, `{time}`, `{cursor}`, `{argument}`), instant copy/paste from launcher, import/export JSON/TOML.
-- [ ] **Emoji & Symbols Picker Plugin**: `Grid` view for Unicode emoji, math/currency symbols, and Nerd Font glyphs with recent/frequent tracking and skin tone preference.
-- [ ] **Floating Notes (Scratchpad) Plugin**: Separate GPUI top-level/layer floating note window, multi-note Markdown editor, fuzzy note switcher, 60-day soft-delete trash.
-- [ ] **Process Manager (Kill Process) Plugin**: Live `/proc` process list with tabular CPU/RAM accessories, `SIGTERM`/`SIGKILL` actions with confirmation.
-- [ ] **Color Picker & Converter Plugin**: XDG Desktop Portal / compositor screen eyedropper, color history `Grid`, HEX/RGB/HSL/OKLCH conversion.
-- [ ] **Focus & Timer Plugin**: Countdown / Pomodoro sessions with desktop notifications (`org.freedesktop.Notifications`) and status bar integration.
-- [ ] **Menu Bar / Status Bar Bridge**: StatusNotifierItem (SNI) tray host export + Waybar JSON IPC stream (`aios status --json`) for `MenuBar` plugins and active Focus timers.
-- [ ] **Exit Criteria**: All first-party external plugins run cleanly offline through the plugin runtime with complete Empty/Loading/Error states in both Dark and Light themes.
+#### Phase 5.1: Inline Calculator & Converter Plugin `[DONE]`
+- [x] Add lightweight dynamic inline query hook in Root Search (`aios-builtin`) + `PluginEvent::SearchChanged` forwarding in `LauncherWindow` so math/unit expressions preview live without opening a separate view first (hybrid auto-detect + optional `=` exclusive prefix with sub-microsecond fast-gate).
+- [x] Build first-party plugin (`com.aios.calculator` in `crates/aios-plugins`): live math expressions, hex/bin/octal & bitwise, units (length, weight, temp, data SI/IEC, time, speed, area, CSS `px/rem/em/pt`), date/timezone math, cached offline currency converter, configurable preferences (`base_font_px`, `decimal_places`, `default_currency`), and SQLite calculation history.
+- [x] **Manual Check & Exit Criteria**: Typing `24 * 12`, `=pi`, `0xff to dec`, `100 cm to in`, `24 px to rem`, `100 usd to idr`, `today + 14d`, `now in tokyo`, or opening Calculator works offline with instant copy (`Enter`), `Ctrl+Enter` drill-down, complete Empty/Error states, and Dark/Light parity.
+
+#### Phase 5.2: Quicklinks Plugin `[PENDING]`
+- [ ] Build external WASM plugin (`com.aios.quicklinks`): custom URL/path templates with `{query}` / `{argument}` placeholders, `List` + `Form` editor (create/edit/delete), and Fallback Command integration in Root Search.
+- [ ] **Manual Check & Exit Criteria**: Creating a quicklink via `Form`, launching with inline arguments, and triggering from Root Search Fallback Commands open the expected URL/path cleanly.
+
+#### Phase 5.3: Snippets Plugin `[PENDING]`
+- [ ] Build external WASM plugin (`com.aios.snippets`): snippet manager (`List+Detail` + `Form` editor), dynamic placeholders (`{clipboard}`, `{date}`, `{time}`, `{cursor}`, `{argument}`), instant copy/paste from launcher, and JSON/TOML import/export.
+- [ ] **Manual Check & Exit Criteria**: Creating, searching, expanding dynamic placeholders, copying to clipboard, and importing/exporting snippets work cleanly in Dark and Light themes.
+
+#### Phase 5.4: Emoji & Symbols Picker Plugin `[PENDING]`
+- [ ] Build external WASM plugin (`com.aios.emoji`): `Grid` view for Unicode emoji, math/currency symbols, and Nerd Font glyphs with category filter, recent/frequent tracking in `LocalStorage`, and skin tone preference.
+- [ ] **Manual Check & Exit Criteria**: Searching and navigating the `Grid` keyboard-only, changing skin tone preference, and copying an emoji/glyph update recents and close with HUD feedback.
+
+#### Phase 5.5: Window Management Plugin (Hyprland & Niri) `[PENDING]`
+- [ ] Implement `CompositorAdapter` in `aios-wayland` for **Hyprland** (`.socket.sock` + `.socket2.sock`) and **Niri** (`$NIRI_SOCKET` via `niri-ipc`) with graceful fallback on other Wayland compositors.
+- [ ] Expose capability-gated `compositor` host API in `wit/aios-plugin.wit` and `aios-plugin-host`.
+- [ ] Build external WASM plugin (`com.aios.window-management`): focus window, move/resize/snap, fullscreen, toggle floating, switch/move workspace, move monitor (plus Niri column consume/expel, maximize/center column, overview toggle).
+- [ ] **Manual Check & Exit Criteria**: Listing open windows, focusing, snapping, and moving workspaces/columns work natively on Hyprland and Niri with keyboard-only controls.
+
+#### Phase 5.6: System Commands Plugin `[PENDING]`
+- [ ] Expose capability-gated system/media host APIs (PipeWire/PulseAudio volume & sink switcher, brightness, MPRIS2 D-Bus media controls, session power actions, XDG Trash).
+- [ ] Build external WASM plugin (`com.aios.system-commands`): Lock, Suspend, Reboot, Shutdown, Logout (with `ConfirmAlert`), Empty Trash, volume/sink switcher, brightness, MPRIS media controls, and Dark/Light theme toggle.
+- [ ] **Manual Check & Exit Criteria**: Destructive power/trash actions require `ConfirmAlert`, audio/brightness/MPRIS commands execute cleanly, and missing optional services show crisp `ErrorView`/Toast feedback.
+
+#### Phase 5.7: Clipboard History Plugin `[PENDING]`
+- [ ] Implement Pure Rust Wayland clipboard daemon (`ext-data-control-v1` / `zwlr-data-control-v1`) in `aios-wayland` modeled on `Rolv-Apneseth/clipvault`: byte-for-byte preservation, BLAKE3 deduplication, content-addressed blob storage (`~/.local/share/aios/blobs/`), min/max entry size & age housekeeping, regex ignore patterns, and sensitive-app active-window blacklist (using `CompositorAdapter` from Phase 5.5).
+- [ ] Build external WASM plugin (`com.aios.clipboard`): `List+Detail` split preview for text, code, links, images, files, and color swatches, with pin/delete/clear and copy/paste actions.
+- [ ] **Manual Check & Exit Criteria**: Text and image copies are captured without leaking memory, sensitive-app copies are excluded, and searching/pinning/pasting works cleanly in Dark and Light themes.
+
+#### Phase 5.8: File Search & Preview Plugin `[PENDING]`
+- [ ] Expose capability-gated high-speed file walker (`fs-walk` / `fs-list-dir` / `fs-open` / `fs-trash`) backed by `aios-fuzzy` parallel filtering.
+- [ ] Build external WASM plugin (`com.aios.file-search`): fast file search, directory drill-down, split preview pane (text/code/image/metadata), and open/reveal/copy path/trash actions.
+- [ ] **Manual Check & Exit Criteria**: Searching large directories stays responsive without UI stalls or memory leaks, previews render cleanly, and drill-down + trash confirmation work keyboard-only.
+
+#### Phase 5.9: Process Manager (Kill Process) Plugin `[PENDING]`
+- [ ] Expose capability-gated `/proc` process inspection and signal host API (`SIGTERM`/`SIGKILL`).
+- [ ] Build external WASM plugin (`com.aios.process-manager`): live `/proc` process list with tabular CPU/RAM accessories, sort/filter options, and `SIGTERM`/`SIGKILL` actions guarded by `ConfirmAlert`.
+- [ ] **Manual Check & Exit Criteria**: Listing processes, sorting by CPU/RAM, and terminating a test process with confirmation work accurately with zero crashes on short-lived PIDs.
+
+#### Phase 5.10: Color Picker & Converter Plugin `[PENDING]`
+- [ ] Expose XDG Desktop Portal `org.freedesktop.portal.Screenshot.PickColor` host capability.
+- [ ] Build external WASM plugin (`com.aios.color-picker`): screen eyedropper trigger, color history `Grid`, and instant HEX/RGB/HSL/OKLCH conversion & copy actions.
+- [ ] **Manual Check & Exit Criteria**: Picking a color on Wayland records it in history `Grid` and copies formatted HEX/RGB/HSL/OKLCH values cleanly.
+
+#### Phase 5.11: Focus & Timer Plugin `[PENDING]`
+- [ ] Expose desktop notification (`org.freedesktop.Notifications`) and daemon timer scheduling host capability.
+- [ ] Build external WASM plugin (`com.aios.focus-timer`): Countdown & Pomodoro sessions, pause/resume/reset, `Form` preset editor, and desktop notifications on completion.
+- [ ] **Manual Check & Exit Criteria**: Starting, pausing, resuming, and completing a timer fires a native Wayland desktop notification and updates state while the launcher is closed.
+
+#### Phase 5.12: Menu Bar / Status Bar Bridge `[PENDING]`
+- [ ] Implement StatusNotifierItem (SNI) tray export over D-Bus and Waybar-compatible JSON stream (`aios status --json`) in `aios-wayland` / `aios-daemon` for `MenuBar` plugin outputs and active Focus timers.
+- [ ] **Manual Check & Exit Criteria**: `aios status --json` streams live `MenuBar` / Focus timer updates cleanly for Waybar/Eww with zero polling leaks.
+
+#### Phase 5.13: Floating Notes (Scratchpad) Plugin `[PENDING]`
+- [ ] Add separate GPUI `XDG TopLevel` floating note window (`app_id: "aios-notes"`) in `aios-ui` with SQLite persistence.
+- [ ] Build external WASM plugin (`com.aios.notes`): multi-note Markdown scratchpad, fuzzy note switcher, quick-capture action, and 60-day soft-delete trash.
+- [ ] **Manual Check & Exit Criteria**: Opening, editing, switching, soft-deleting, and restoring notes work smoothly in a floating window alongside Hyprland/Niri rules in both Dark and Light themes.
 
 ### Phase 6: Polish, Packaging & Plugin Ecosystem Readiness `[PENDING]`
 

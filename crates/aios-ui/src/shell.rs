@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aios_builtin::{
-    ExternalRootEntry, ExternalRootKind, IconResolver, RootActionOutcome, RootSearchOrchestrator,
-    open_url_detached,
+    ExternalRootEntry, ExternalRootKind, IconResolver, InlineRootResult, RootActionOutcome,
+    RootSearchOrchestrator, open_url_detached,
 };
 use aios_core::config::{AiosConfig, ResolvedTheme, ThemeMode};
 use aios_core::paths::AiosPaths;
@@ -135,7 +135,8 @@ impl LauncherWindow {
         this
     }
 
-    /// Re-runs Root Search orchestrator when the active frame is `root.search`.
+    /// Re-runs Root Search orchestrator (plus fast-gated inline plugins such as Calculator)
+    /// when the active frame is `root.search`.
     pub fn refresh_root_search(&mut self) {
         if self.state.current().id != "root.search" {
             return;
@@ -149,10 +150,37 @@ impl LauncherWindow {
                 .unwrap_or_else(|| "all".to_string()),
             _ => "all".to_string(),
         };
+        let inline_results: Vec<InlineRootResult> = self
+            .plugin_host
+            .borrow()
+            .evaluate_inline_query(&query, "system")
+            .into_iter()
+            .map(|r| {
+                let seed_query = query.trim().strip_prefix('=').map(str::trim).unwrap_or(query.trim());
+                InlineRootResult {
+                    id: r.id,
+                    section_title: r.section_title,
+                    section_subtitle: r.section_subtitle,
+                    title: r.title,
+                    subtitle: r.subtitle,
+                    badge: r.badge,
+                    icon_path: None,
+                    tag_label: r.tag_label,
+                    copy_action_id: r.copy_action_id,
+                    copy_action_title: format!("Copy {}", r.copy_value),
+                    open_action_id: format!(
+                        "plugin.run-query:{}:{}:{seed_query}",
+                        r.plugin_id, r.command_id
+                    ),
+                    open_action_title: r.open_action_title,
+                    exclusive: r.exclusive,
+                }
+            })
+            .collect();
         let next_view = self
             .root_search
             .borrow_mut()
-            .build_root_view(&query, &active_filter);
+            .build_root_view_with_inline(&query, &active_filter, &inline_results);
         let frame = self.state.current_mut();
         frame.view = next_view;
         frame.clamp_selection();
@@ -789,6 +817,12 @@ impl LauncherWindow {
                     );
                 }
                 self.apply_host_action_result(result, window, cx);
+                if let Some(rest) = action_id.strip_prefix("plugin.run-query:")
+                    && let Some((_, after_plugin)) = rest.split_once(':')
+                    && let Some((_, raw_query)) = after_plugin.split_once(':')
+                {
+                    self.state.current_mut().search_query = raw_query.to_owned();
+                }
                 cx.notify();
                 return;
             }
@@ -956,8 +990,12 @@ impl LauncherWindow {
 
         // Global keyboard shortcuts matching `DESIGN.md`.
         if key == "escape" {
+            let had_query = !self.state.current().search_query.is_empty();
             let effect = self.state.handle_escape();
             self.refresh_root_search();
+            if had_query && self.state.current().search_query.is_empty() {
+                self.dispatch_plugin_search_if_needed(window, cx);
+            }
             self.sync_script_refresh_with_active_frame();
             self.apply_effect(effect, window, cx);
             cx.notify();

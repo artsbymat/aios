@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use aios_core::{AiosConfig, AiosPaths};
 use aios_plugin_sdk::{
     ActionItem, ActionPanel, ActionPanelBuilder, ConfirmAlert, EmptyView, FilterOption, FormField,
-    FormViewBuilder, ListItemBuilder, ListViewBuilder, MetadataEntry, PreferenceKind, SemanticTone,
-    ViewNode,
+    FormViewBuilder, ListItemBuilder, ListViewBuilder, MetadataEntry, PluginManifest,
+    PreferenceKind, SemanticTone, ViewNode,
 };
 
 use crate::manifest::InstalledPlugin;
@@ -16,6 +16,18 @@ use crate::manifest::InstalledPlugin;
 pub fn build_settings_home_view(
     config: &AiosConfig,
     paths: &AiosPaths,
+    plugins: &[InstalledPlugin],
+    permissions_by_plugin: &HashMap<String, HashMap<String, bool>>,
+) -> ViewNode {
+    build_settings_home_view_with_first_party(config, paths, &[], plugins, permissions_by_plugin)
+}
+
+/// Builds the main Settings & Plugins `List + Split Detail` view including first-party plugins.
+#[must_use]
+pub fn build_settings_home_view_with_first_party(
+    config: &AiosConfig,
+    paths: &AiosPaths,
+    first_party: &[(PluginManifest, &'static str)],
     plugins: &[InstalledPlugin],
     permissions_by_plugin: &HashMap<String, HashMap<String, bool>>,
 ) -> ViewNode {
@@ -173,6 +185,71 @@ pub fn build_settings_home_view(
     builder = builder.section(Some("General & Management"), None, general_items);
 
     // Section 2: Installed WASM Plugins
+    if !first_party.is_empty() {
+        let fp_items = first_party
+            .iter()
+            .map(|(m, badge)| {
+                let cmds_summary = m
+                    .commands
+                    .iter()
+                    .map(|c| format!("- `{}`: {}", c.id, c.title))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut actions = ActionPanelBuilder::new().section(
+                    Some("Plugin"),
+                    vec![ActionItem::new(
+                        format!("settings.plugin-prefs:{}", m.id),
+                        "Configure Preferences",
+                    )
+                    .shortcut("Enter")],
+                );
+                if let Some(first_cmd) = m.commands.first() {
+                    actions = actions.section(
+                        Some("Commands"),
+                        vec![ActionItem::new(
+                            format!("plugin.run:{}:{}", m.id, first_cmd.id),
+                            format!("Open {}", first_cmd.title),
+                        )
+                        .shortcut("Ctrl+Enter")],
+                    );
+                }
+
+                ListItemBuilder::new(format!("fp:{}", m.id), m.name.clone())
+                    .subtitle(format!("v{} · {}", m.version, m.id))
+                    .icon(*badge)
+                    .filter_group("plugins")
+                    .keyword("plugin")
+                    .keyword(m.id.clone())
+                    .accessory_tag("First-Party", SemanticTone::Accent)
+                    .detail(
+                        format!("# {}\n\n{}\n\n## Commands\n\n{}", m.name, m.description, cmds_summary),
+                        vec![
+                            MetadataEntry::Label {
+                                title: "Plugin ID".to_string(),
+                                text: m.id.clone(),
+                            },
+                            MetadataEntry::Label {
+                                title: "Version".to_string(),
+                                text: m.version.clone(),
+                            },
+                            MetadataEntry::Label {
+                                title: "Preferences".to_string(),
+                                text: format!("{} configurable", m.preferences.len()),
+                            },
+                        ],
+                    )
+                    .actions(actions.build())
+                    .build()
+            })
+            .collect();
+
+        builder = builder.section(
+            Some("First-Party Plugins"),
+            Some(&format!("{} enabled", first_party.len())),
+            fp_items,
+        );
+    }
+
     if !plugins.is_empty() {
         let plugin_items = plugins
             .iter()
@@ -416,18 +493,27 @@ pub fn build_plugin_preferences_form(
     plugin: &InstalledPlugin,
     current_values: &HashMap<String, String>,
 ) -> ViewNode {
-    let mut form = FormViewBuilder::new(format!("Preferences: {}", plugin.manifest.name));
+    build_manifest_preferences_form(&plugin.manifest, current_values)
+}
 
-    if plugin.manifest.preferences.is_empty() {
+/// Builds the Preferences `FormView` for any plugin manifest (first-party or WASM).
+#[must_use]
+pub fn build_manifest_preferences_form(
+    manifest: &PluginManifest,
+    current_values: &HashMap<String, String>,
+) -> ViewNode {
+    let mut form = FormViewBuilder::new(format!("Preferences: {}", manifest.name));
+
+    if manifest.preferences.is_empty() {
         form = form.field(FormField::Description {
             title: "No Preferences Declared".to_string(),
             text: format!(
-                "{} does not declare any [[preferences]] entries in aios-plugin.toml.",
-                plugin.manifest.name
+                "{} does not declare any preferences.",
+                manifest.name
             ),
         });
     } else {
-        for pref in &plugin.manifest.preferences {
+        for pref in &manifest.preferences {
             let value = current_values
                 .get(&pref.name)
                 .cloned()
@@ -485,7 +571,7 @@ pub fn build_plugin_preferences_form(
 
     form.actions(ActionPanel::from_actions(vec![
         ActionItem::new(
-            format!("settings.plugin-prefs-save:{}", plugin.manifest.id),
+            format!("settings.plugin-prefs-save:{}", manifest.id),
             "Save Preferences",
         )
         .shortcut("Enter"),
