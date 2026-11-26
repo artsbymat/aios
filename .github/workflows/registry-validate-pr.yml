@@ -10,6 +10,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install Linux system development libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libsqlite3-dev \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libxcb-xkb-dev \
+            libwayland-dev
       - uses: dtolnay/rust-toolchain@stable
       - name: Build registry index and validate schema
         run: cargo run -p aios-app -- plugin registry-build registry --out /tmp/index.json
